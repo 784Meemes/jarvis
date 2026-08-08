@@ -491,19 +491,32 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   });
 
   var legendEl = document.getElementById("legend");
-  groupOrder.forEach(function (g) {
+
+  function addLegendRow(group, color) {
     var row = document.createElement("div");
     row.className = "row";
     var sw = document.createElement("span");
     sw.className = "swatch";
-    sw.style.color = groupColors[g];
-    sw.style.background = groupColors[g];
+    sw.style.color = color;
+    sw.style.background = color;
     var label = document.createElement("span");
-    label.textContent = g;
+    label.textContent = group;
     row.appendChild(sw);
     row.appendChild(label);
     legendEl.appendChild(row);
-  });
+  }
+  groupOrder.forEach(function (g) { addLegendRow(g, groupColors[g]); });
+
+  // Assigns (and legends) a palette color for a group discovered live, e.g.
+  // the first time a "captures" note is remembered by voice.
+  function ensureGroupColor(group) {
+    if (groupColors[group]) return groupColors[group];
+    var color = PALETTE[groupOrder.length % PALETTE.length];
+    groupColors[group] = color;
+    groupOrder.push(group);
+    addLegendRow(group, color);
+    return color;
+  }
 
   // ---- adjacency, built once from links (source/target are numeric ids) ----
   var neighborIds = {};   // id -> Set of neighbor ids
@@ -653,10 +666,16 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     .onBackgroundClick(closePanel)
     .cooldownTime(4000);
 
+  // id -> birth timestamp (ms), for the brief glow pulse a newly remembered
+  // node gets as it's born; entries expire and remove themselves.
+  var birthPulses = {};
+  var BIRTH_PULSE_MS = 1400;
+
   // dim non-highlighted nodes/links whenever a selection or cluster is lit
   Graph.nodeThreeObject(function (node) {
     var obj = makeNodeObject(node);
-    var dimmed = highlightNodes.size > 0 && !highlightNodes.has(node.id);
+    var birthStart = birthPulses[node.id];
+    var dimmed = !birthStart && highlightNodes.size > 0 && !highlightNodes.has(node.id);
     obj.children.forEach(function (child) {
       if (child.material) {
         child.material.transparent = true;
@@ -664,9 +683,26 @@ import * as THREE from "https://esm.sh/three@0.180.0";
       }
     });
     var scale = node.id === selectedId ? 1.6 : (highlightNodes.has(node.id) ? 1.25 : 1);
+    if (birthStart) {
+      var t = Math.min(1, (performance.now() - birthStart) / BIRTH_PULSE_MS);
+      scale *= 1 + 0.9 * (1 - t) * (0.5 + 0.5 * Math.sin(t * Math.PI * 6));
+    }
     obj.scale.set(scale, scale, scale);
     return obj;
   });
+
+  function pulseGlow(id) {
+    birthPulses[id] = performance.now();
+    (function tick() {
+      if (performance.now() - birthPulses[id] > BIRTH_PULSE_MS) {
+        delete birthPulses[id];
+        Graph.refresh();
+        return;
+      }
+      Graph.refresh();
+      requestAnimationFrame(tick);
+    })();
+  }
 
   // starfield lives directly in the scene, independent of the node graph
   Graph.scene().add(makeStarfield());
@@ -820,6 +856,51 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     if (top) focusNode(top);
   }
 
+  function graphCentroid() {
+    var cx = 0, cy = 0, cz = 0;
+    nodes.forEach(function (n) { cx += n.x || 0; cy += n.y || 0; cz += n.z || 0; });
+    var count = nodes.length || 1;
+    return { x: cx / count, y: cy / count, z: cz / count };
+  }
+
+  // Grows the galaxy live: adds a note just written via "remember that...",
+  // born at its closest relative's position (or the graph's centroid if it
+  // has no clear relative) with a brief glow pulse, then flies to it.
+  function birthNode(newNode, anchorId, linkTargetIds) {
+    if (!newNode) return;
+    ensureGroupColor(newNode.group);
+
+    var anchor = (anchorId !== null && anchorId !== undefined) ? nodesById[anchorId] : null;
+    var spawn = anchor ? { x: anchor.x || 0, y: anchor.y || 0, z: anchor.z || 0 } : graphCentroid();
+    var jitter = 14;
+    newNode.x = spawn.x + (Math.random() - 0.5) * jitter;
+    newNode.y = spawn.y + (Math.random() - 0.5) * jitter;
+    newNode.z = spawn.z + (Math.random() - 0.5) * jitter;
+
+    nodesById[newNode.id] = newNode;
+    neighborIds[newNode.id] = new Set();
+    neighborLinks[newNode.id] = new Set();
+
+    var newLinks = (linkTargetIds || []).map(function (targetId) {
+      return { source: newNode.id, target: targetId };
+    });
+    newLinks.forEach(function (l) {
+      neighborIds[newNode.id].add(l.target);
+      neighborLinks[newNode.id].add(l);
+      if (neighborIds[l.target]) {
+        neighborIds[l.target].add(newNode.id);
+        neighborLinks[l.target].add(l);
+      }
+    });
+
+    nodes.push(newNode);
+    links.push.apply(links, newLinks);
+    Graph.graphData({ nodes: nodes, links: links });
+
+    pulseGlow(newNode.id);
+    focusNode(newNode);
+  }
+
   // ---- chat dock: ask the galaxy a question --------------------------
   var chatSessionId = null;
   var chatForm = document.getElementById("chat-form");
@@ -945,7 +1026,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
       var transcript = e.results[0][0].transcript.trim();
       if (transcript) {
         chatInput.value = transcript;
-        askGalaxy(transcript);
+        handleUtterance(transcript);
         chatInput.value = "";
       }
     };
@@ -1061,13 +1142,64 @@ import * as THREE from "https://esm.sh/three@0.180.0";
       });
   }
 
+  // ---- remember that...: grow the galaxy live, by voice or text ----------
+  var REMEMBER_RE = /^\s*remember\s+that\b/i;
+
+  function rememberThis(text) {
+    unlockAudio();
+    var ui = addChatEntry(text);
+    chatSend.disabled = true;
+    setStatus("thinking");
+
+    fetch("/remember", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text })
+    })
+      .then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+      })
+      .then(function (result) {
+        chatSend.disabled = false;
+        ui.entry.classList.remove("pending");
+        setStatus("");
+
+        if (!result.ok || result.data.error) {
+          ui.answerEl.classList.add("error");
+          ui.answerEl.textContent = (result.data && result.data.error) || "Could not file that note.";
+          return;
+        }
+
+        var reply = result.data.reply || "Filed away, sir.";
+        ui.answerEl.textContent = reply;
+        speak(truncateForSpeech(reply));
+        birthNode(result.data.node, result.data.anchor_id, result.data.links || []);
+        chatTranscript.scrollTop = chatTranscript.scrollHeight;
+      })
+      .catch(function () {
+        chatSend.disabled = false;
+        ui.entry.classList.remove("pending");
+        setStatus("");
+        ui.answerEl.classList.add("error");
+        ui.answerEl.textContent = "Could not reach the server.";
+      });
+  }
+
+  function handleUtterance(text) {
+    if (REMEMBER_RE.test(text)) {
+      rememberThis(text);
+    } else {
+      askGalaxy(text);
+    }
+  }
+
   chatForm.addEventListener("submit", function (e) {
     e.preventDefault();
     unlockAudio();
     var question = chatInput.value.trim();
     if (!question) return;
     chatInput.value = "";
-    askGalaxy(question);
+    handleUtterance(question);
   });
 })();
 </script>
