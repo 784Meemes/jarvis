@@ -8,11 +8,10 @@ POST /chat  {"question": str, "session_id": str|null} -> answers the question
             Messages API. Conversation history is kept server-side, per
             session_id, so follow-up questions have context.
 
-The API key is read ONLY from the ANTHROPIC_API_KEY environment variable -
-never from a file, so there is nothing secret in this repo that could be
-committed or served. Set it in your hosting platform's dashboard (or in your
-own shell before running this locally). The model name is not secret and can
-come from config.json or the CLAUDE_MODEL environment variable.
+The API key and model both come from config.json in the project root, which
+sits outside viewer/ and is therefore never served to the browser - it is
+read directly off disk by this process only. Paste your key into the
+"api_key" field of config.json before starting the server.
 """
 import http.server
 import json
@@ -58,30 +57,29 @@ class ChatError(Exception):
         self.status = status
 
 
-def load_api_key():
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
+def load_config():
+    if not CONFIG_PATH.exists():
+        raise ChatError(500, "config.json not found in the project root")
+    try:
+        return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        raise ChatError(500, "config.json is not valid JSON")
+
+
+def load_api_key(config):
+    api_key = config.get("api_key")
+    if not api_key or api_key == "PUT-YOUR-KEY-HERE":
         raise ChatError(
             400,
-            "No API key configured. Set the ANTHROPIC_API_KEY environment "
-            "variable (in your hosting platform's dashboard, or in your "
-            "shell if running locally) and restart the server.",
+            "No API key configured. Paste your Anthropic API key into the "
+            "\"api_key\" field of config.json (project root) and restart "
+            "the server.",
         )
     return api_key
 
 
-def load_model():
-    model = os.environ.get("CLAUDE_MODEL")
-    if model:
-        return model
-    if CONFIG_PATH.exists():
-        try:
-            config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            if config.get("model"):
-                return config["model"]
-        except json.JSONDecodeError:
-            pass
-    return DEFAULT_MODEL
+def load_model(config):
+    return config.get("model") or DEFAULT_MODEL
 
 
 def load_notes():
@@ -166,8 +164,9 @@ def call_anthropic(api_key, model, system_prompt, messages):
 
 
 def handle_chat(question, session_id):
-    api_key = load_api_key()
-    model = load_model()
+    config = load_config()
+    api_key = load_api_key(config)
+    model = load_model(config)
     nodes = load_notes()
     top_notes = score_notes(question, nodes)
     system_prompt = build_system_prompt(top_notes)
