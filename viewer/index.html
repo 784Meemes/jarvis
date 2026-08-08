@@ -5,23 +5,41 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Knowledge Galaxy</title>
 <style>
+  /*
+    Direction: a hand-drafted celestial atlas, not a sci-fi HUD.
+    Deep space ground; a single warm beacon accent (amber, like a
+    marked star on a chart or a brass instrument dial); serif for
+    note titles (atlas-plate lettering); monospace for coordinates/
+    paths (instrument readouts); categorical node colors drawn from
+    real stellar classification (hot blue -> cool red), so the
+    palette encodes something true rather than reading as decoration.
+    Deliberately single-theme: it's a night sky, so it stays one.
+  */
   :root {
     color-scheme: dark;
-    --bg: #000003;
-    --panel-bg: rgba(8, 10, 22, 0.88);
-    --panel-border: rgba(140, 160, 255, 0.25);
-    --text: #e7e9f7;
-    --text-dim: #9aa0c0;
-    --accent: #8ecbff;
+    --void: #05060b;
+    --void-2: #0b0d18;
+    --starlight: #eef0fb;
+    --dim: #7c86ad;
+    --line: rgba(148, 156, 199, 0.2);
+    --accent: #ffb86b;
+    --accent-dim: rgba(255, 184, 107, 0.35);
+
+    --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
   html, body {
     margin: 0;
     height: 100%;
-    background: var(--bg);
+    background: var(--void);
     overflow: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    color: var(--text);
+    font-family: var(--font-ui);
+    color: var(--starlight);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
   }
 
   #graph {
@@ -30,111 +48,158 @@
     z-index: 1;
   }
 
+  /* ---- title strip, like the caption on an atlas plate ---- */
   #hint {
     position: fixed;
-    top: 18px;
-    left: 22px;
+    top: 20px;
+    left: 24px;
     z-index: 5;
-    font-size: 13px;
-    letter-spacing: 0.03em;
-    color: var(--text-dim);
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
     pointer-events: none;
-    text-transform: uppercase;
+    animation: fade-in 1.1s ease-out both;
   }
-  #hint b { color: var(--text); font-weight: 600; }
+  #hint .mark {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 18px;
+    letter-spacing: 0.02em;
+    color: var(--starlight);
+  }
+  #hint .sep { color: var(--line); }
+  #hint .sub {
+    font-family: var(--font-ui);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
 
+  /* ---- catalog key, bottom-left legend ---- */
   #legend {
     position: fixed;
-    bottom: 18px;
-    left: 22px;
+    bottom: 22px;
+    left: 24px;
     z-index: 5;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--text-dim);
+    gap: 7px;
+    padding: 12px 16px;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: rgba(11, 13, 24, 0.55);
+    backdrop-filter: blur(6px);
     pointer-events: none;
+    animation: fade-in 1.1s ease-out 0.15s both;
   }
-  #legend .row { display: flex; align-items: center; gap: 8px; }
+  #legend .row { display: flex; align-items: center; gap: 9px; }
   #legend .swatch {
-    width: 10px;
-    height: 10px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
-    box-shadow: 0 0 8px 1px currentColor;
+    box-shadow: 0 0 7px 1.5px currentColor;
+    flex: none;
+  }
+  #legend .row span:last-child {
+    font-family: var(--font-ui);
+    font-size: 11.5px;
+    letter-spacing: 0.04em;
+    color: var(--dim);
   }
 
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ---- observation card, slide-in side panel ---- */
   #panel {
     position: fixed;
     top: 0;
     right: 0;
     height: 100%;
-    width: min(380px, 88vw);
-    background: var(--panel-bg);
-    backdrop-filter: blur(10px);
-    border-left: 1px solid var(--panel-border);
-    box-shadow: -20px 0 60px rgba(0, 0, 0, 0.5);
+    width: min(400px, 88vw);
+    background: linear-gradient(180deg, var(--void-2), var(--void));
+    border-left: 1px solid var(--line);
+    box-shadow: -30px 0 70px rgba(0, 0, 0, 0.55);
     transform: translateX(100%);
-    transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+    transition: transform 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
     z-index: 10;
-    padding: 28px 26px;
+    padding: 30px 28px;
     overflow-y: auto;
   }
   #panel.open { transform: translateX(0); }
 
   #panel-close {
     position: absolute;
-    top: 18px;
-    right: 18px;
+    top: 20px;
+    right: 20px;
+    width: 28px;
+    height: 28px;
     background: none;
-    border: none;
-    color: var(--text-dim);
-    font-size: 20px;
+    border: 1px solid var(--line);
+    border-radius: 50%;
+    color: var(--dim);
+    font-family: var(--font-ui);
+    font-size: 15px;
     line-height: 1;
     cursor: pointer;
-    padding: 4px 8px;
+    transition: color 0.15s, border-color 0.15s;
   }
-  #panel-close:hover { color: var(--text); }
+  #panel-close:hover { color: var(--starlight); border-color: var(--dim); }
+  #panel-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   #panel-group {
     display: inline-block;
-    font-size: 11px;
-    letter-spacing: 0.08em;
+    font-family: var(--font-ui);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--accent);
-    border: 1px solid rgba(142, 203, 255, 0.35);
+    border: 1px solid var(--accent-dim);
     border-radius: 999px;
-    padding: 3px 10px;
-    margin-bottom: 14px;
+    padding: 4px 11px;
+    margin-bottom: 16px;
   }
 
   #panel-title {
-    font-size: 22px;
-    font-weight: 600;
-    margin: 0 0 4px;
-    line-height: 1.25;
-    padding-right: 20px;
+    font-family: var(--font-display);
+    font-size: 25px;
+    font-weight: 500;
+    margin: 0 0 6px;
+    line-height: 1.3;
+    padding-right: 30px;
+    text-wrap: balance;
   }
 
   #panel-path {
-    font-size: 12px;
-    color: var(--text-dim);
-    margin: 0 0 18px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.01em;
+    color: var(--dim);
+    margin: 0 0 22px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--line);
     word-break: break-all;
   }
 
   #panel-excerpt {
-    font-size: 14px;
-    line-height: 1.6;
-    color: var(--text);
+    font-family: var(--font-display);
+    font-size: 15.5px;
+    line-height: 1.65;
+    color: var(--starlight);
     white-space: pre-wrap;
-    margin: 0 0 22px;
+    margin: 0 0 26px;
+    max-width: 34em;
   }
 
   #panel-links-label {
-    font-size: 11px;
-    letter-spacing: 0.08em;
+    font-family: var(--font-ui);
+    font-size: 10.5px;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--text-dim);
+    color: var(--dim);
     margin: 0 0 10px;
   }
 
@@ -144,33 +209,48 @@
     padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 5px;
   }
   #panel-links li a {
-    display: block;
-    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--starlight);
     text-decoration: none;
+    font-family: var(--font-ui);
     font-size: 13.5px;
-    padding: 8px 10px;
-    border-radius: 8px;
+    padding: 9px 11px;
+    border-radius: 4px;
     border: 1px solid transparent;
-    background: rgba(255, 255, 255, 0.03);
+    background: rgba(238, 240, 251, 0.03);
     transition: background 0.15s, border-color 0.15s;
   }
-  #panel-links li a:hover {
-    background: rgba(142, 203, 255, 0.1);
-    border-color: rgba(142, 203, 255, 0.3);
+  #panel-links li a::before {
+    content: "\2192";
+    color: var(--accent);
+    font-size: 12px;
   }
+  #panel-links li a:hover,
+  #panel-links li a:focus-visible {
+    background: rgba(255, 184, 107, 0.08);
+    border-color: var(--accent-dim);
+  }
+  #panel-links li a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   #panel-empty {
+    font-family: var(--font-ui);
     font-size: 13px;
-    color: var(--text-dim);
+    color: var(--dim);
     font-style: italic;
   }
 </style>
 </head>
 <body>
 
-<div id="hint"><b>Knowledge Galaxy</b> — drag to orbit, scroll to zoom, click a node to explore</div>
+<div id="hint">
+  <span class="mark">Knowledge Galaxy</span>
+  <span class="sep">·</span>
+  <span class="sub">drag to orbit &middot; scroll to zoom &middot; click a star to read</span>
+</div>
 
 <div id="legend"></div>
 
@@ -182,7 +262,7 @@
   <h2 id="panel-title"></h2>
   <p id="panel-path"></p>
   <p id="panel-excerpt"></p>
-  <p id="panel-links-label">Connected notes</p>
+  <p id="panel-links-label">Cross-references</p>
   <ul id="panel-links"></ul>
 </div>
 
@@ -198,16 +278,18 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   var nodes = data.nodes || [];
   var links = data.links || [];
 
-  // ---- color palette, assigned per group in first-seen order ----------
+  // Categorical palette follows real stellar classification order (hot blue
+  // -> cool red: O B A F G K M) so groups read as points on one real scale
+  // rather than an arbitrary rainbow. Saturated for on-screen legibility,
+  // the way false-color astrophotography is. Cycles past 7 folders.
   var PALETTE = [
-    "#8ecbff", // blue
-    "#ff8ecb", // pink
-    "#c7ff8e", // green
-    "#ffcf8e", // amber
-    "#c08eff", // violet
-    "#8efff2", // teal
-    "#ff8e8e", // red
-    "#ffe98e"  // yellow
+    "#5fa8ff", // O - blue
+    "#7ee0e8", // B - cyan
+    "#eef0fb", // A - white
+    "#ffe066", // F - yellow
+    "#ffb15c", // G - gold (sun-like)
+    "#ff7a5c", // K - orange
+    "#ff4d6d"  // M - red
   ];
   var groupColors = {};
   var groupOrder = [];
@@ -346,7 +428,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   // ---- build the graph ----------------------------------------------------
   var elem = document.getElementById("graph");
   var Graph = ForceGraph3D()(elem)
-    .backgroundColor("#000003")
+    .backgroundColor("#05060b")
     .graphData({ nodes: nodes, links: links })
     .nodeId("id")
     .nodeLabel(function (n) { return n.label; })
@@ -423,7 +505,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     if (!neighbors.length) {
       var empty = document.createElement("li");
       empty.id = "panel-empty";
-      empty.textContent = "No connections yet";
+      empty.textContent = "No cross-references yet";
       panelLinks.appendChild(empty);
     } else {
       neighbors.forEach(function (nb) {
