@@ -1,0 +1,4 @@
+# No dependencies - server.py is stdlib-only Python.
+# This file exists so hosting platforms with a default
+# `pip install -r requirements.txt` build step don't error
+# out looking for one.
