@@ -242,6 +242,133 @@
     color: var(--dim);
     font-style: italic;
   }
+
+  /* ---- chat dock: ask the galaxy a question ---- */
+  #chatdock {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 6;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 0 24px 22px;
+    pointer-events: none;
+  }
+  #chat-transcript {
+    width: min(640px, 100%);
+    max-height: 32vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 10px;
+    pointer-events: none;
+  }
+  #chat-transcript:empty { margin-bottom: 0; }
+  .chat-entry {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: auto;
+    animation: fade-in 0.35s ease-out both;
+  }
+  .chat-question {
+    font-family: var(--font-ui);
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--dim);
+  }
+  .chat-answer {
+    font-family: var(--font-display);
+    font-size: 15px;
+    line-height: 1.6;
+    color: var(--starlight);
+    background: rgba(11, 13, 24, 0.72);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    backdrop-filter: blur(8px);
+  }
+  .chat-entry.pending .chat-answer {
+    color: var(--dim);
+    font-style: italic;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+  .chat-answer.error { color: #ffb0a0; border-color: rgba(255, 120, 100, 0.35); }
+  @keyframes pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+
+  .chat-sources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .chat-source-chip {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.01em;
+    padding: 4px 10px;
+    border: 1px solid var(--accent-dim);
+    border-radius: 999px;
+    color: var(--accent);
+    background: rgba(255, 184, 107, 0.08);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .chat-source-chip:hover,
+  .chat-source-chip:focus-visible {
+    background: rgba(255, 184, 107, 0.2);
+  }
+  .chat-source-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  #chat-form {
+    width: min(640px, 100%);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    pointer-events: auto;
+    background: rgba(11, 13, 24, 0.8);
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 6px 6px 6px 20px;
+    backdrop-filter: blur(10px);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    transition: border-color 0.15s;
+  }
+  #chat-form:focus-within { border-color: var(--accent-dim); }
+
+  #chat-input {
+    flex: 1;
+    min-width: 0;
+    background: none;
+    border: none;
+    outline: none;
+    color: var(--starlight);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    padding: 11px 0;
+  }
+  #chat-input::placeholder { color: var(--dim); }
+
+  #chat-send {
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--accent-dim);
+    background: rgba(255, 184, 107, 0.12);
+    color: var(--accent);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  #chat-send:hover:not(:disabled) { background: rgba(255, 184, 107, 0.24); }
+  #chat-send:disabled { opacity: 0.4; cursor: default; }
+  #chat-input:focus-visible,
+  #chat-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 </style>
 </head>
 <body>
@@ -264,6 +391,14 @@
   <p id="panel-excerpt"></p>
   <p id="panel-links-label">Cross-references</p>
   <ul id="panel-links"></ul>
+</div>
+
+<div id="chatdock">
+  <div id="chat-transcript" aria-live="polite"></div>
+  <form id="chat-form" autocomplete="off">
+    <input id="chat-input" type="text" placeholder="Ask your galaxy…" autocomplete="off" />
+    <button id="chat-send" type="submit" aria-label="Ask">&#8594;</button>
+  </form>
 </div>
 
 <script src="graph-data.js"></script>
@@ -557,6 +692,91 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     }
     focusNode(node);
   }
+
+  // ---- chat dock: ask the galaxy a question --------------------------
+  var chatSessionId = null;
+  var chatForm = document.getElementById("chat-form");
+  var chatInput = document.getElementById("chat-input");
+  var chatSend = document.getElementById("chat-send");
+  var chatTranscript = document.getElementById("chat-transcript");
+
+  function addChatEntry(question) {
+    var entry = document.createElement("div");
+    entry.className = "chat-entry pending";
+
+    var q = document.createElement("div");
+    q.className = "chat-question";
+    q.textContent = question;
+
+    var a = document.createElement("div");
+    a.className = "chat-answer";
+    a.textContent = "Reading the stars…";
+
+    entry.appendChild(q);
+    entry.appendChild(a);
+    chatTranscript.appendChild(entry);
+    chatTranscript.scrollTop = chatTranscript.scrollHeight;
+    return { entry: entry, answerEl: a };
+  }
+
+  function askGalaxy(question) {
+    var ui = addChatEntry(question);
+    chatSend.disabled = true;
+
+    fetch("/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: question, session_id: chatSessionId })
+    })
+      .then(function (res) {
+        return res.json().then(function (data) { return { ok: res.ok, data: data }; });
+      })
+      .then(function (result) {
+        chatSend.disabled = false;
+        ui.entry.classList.remove("pending");
+
+        if (!result.ok || result.data.error) {
+          ui.answerEl.classList.add("error");
+          ui.answerEl.textContent = (result.data && result.data.error) || "Something went wrong.";
+          return;
+        }
+
+        chatSessionId = result.data.session_id || chatSessionId;
+        ui.answerEl.textContent = result.data.answer || "(no answer)";
+
+        var nodeIds = result.data.nodes || [];
+        if (nodeIds.length) {
+          var chips = document.createElement("div");
+          chips.className = "chat-sources";
+          nodeIds.forEach(function (id) {
+            var n = nodesById[id];
+            if (!n) return;
+            var chip = document.createElement("button");
+            chip.type = "button";
+            chip.className = "chat-source-chip";
+            chip.textContent = n.label;
+            chip.addEventListener("click", function () { focusNode(n); });
+            chips.appendChild(chip);
+          });
+          ui.entry.appendChild(chips);
+        }
+        chatTranscript.scrollTop = chatTranscript.scrollHeight;
+      })
+      .catch(function () {
+        chatSend.disabled = false;
+        ui.entry.classList.remove("pending");
+        ui.answerEl.classList.add("error");
+        ui.answerEl.textContent = "Could not reach the server.";
+      });
+  }
+
+  chatForm.addEventListener("submit", function (e) {
+    e.preventDefault();
+    var question = chatInput.value.trim();
+    if (!question) return;
+    chatInput.value = "";
+    askGalaxy(question);
+  });
 })();
 </script>
 </body>
