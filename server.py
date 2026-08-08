@@ -1,31 +1,43 @@
 #!/usr/bin/env python3
-"""Serve viewer/ and answer questions about the notes at http://localhost:4700/.
+"""Serve viewer/ and answer questions about the notes.
 
 GET  /...   Static files from viewer/ only. config.json and everything else
             in the project root is outside this directory and unreachable.
 POST /chat  {"question": str, "session_id": str|null} -> answers the question
-            by finding the most relevant notes and shelling out to `claude -p`
-            (your Claude Code subscription, not the Anthropic API - no key
-            needed). Conversation history is kept server-side, per session_id,
-            so follow-up questions have context.
+            by finding the most relevant notes and calling the Anthropic
+            Messages API. Conversation history is kept server-side, per
+            session_id, so follow-up questions have context.
+
+The API key is read ONLY from the ANTHROPIC_API_KEY environment variable -
+never from a file, so there is nothing secret in this repo that could be
+committed or served. Set it in your hosting platform's dashboard (or in your
+own shell before running this locally). The model name is not secret and can
+come from config.json or the CLAUDE_MODEL environment variable.
 """
 import http.server
 import json
+import os
 import re
 import secrets
-import subprocess
 import threading
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-PORT = 4700
+PORT = int(os.environ.get("PORT", 4700))
 ROOT_DIR = Path(__file__).resolve().parent
 VIEWER_DIR = ROOT_DIR / "viewer"
 CONFIG_PATH = ROOT_DIR / "config.json"
 GRAPH_DATA_PATH = VIEWER_DIR / "graph-data.js"
 
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
+DEFAULT_MODEL = "claude-sonnet-5"
+MAX_TOKENS = 500
+REQUEST_TIMEOUT_SECONDS = 60
+
 TOP_N = 6
-MAX_HISTORY_TURNS = 8
-CLAUDE_TIMEOUT_SECONDS = 90
+MAX_HISTORY_MESSAGES = 20  # 10 question/answer turns
 
 STOPWORDS = {
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -36,7 +48,7 @@ STOPWORDS = {
     "would", "will", "there", "their", "them", "than", "then", "tell",
 }
 
-SESSIONS = {}  # session_id -> list of (question, answer) tuples
+SESSIONS = {}  # session_id -> list of {"role": ..., "content": ...} dicts
 SESSIONS_LOCK = threading.Lock()
 
 
@@ -46,14 +58,30 @@ class ChatError(Exception):
         self.status = status
 
 
+def load_api_key():
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ChatError(
+            400,
+            "No API key configured. Set the ANTHROPIC_API_KEY environment "
+            "variable (in your hosting platform's dashboard, or in your "
+            "shell if running locally) and restart the server.",
+        )
+    return api_key
+
+
 def load_model():
-    if not CONFIG_PATH.exists():
-        raise ChatError(500, "config.json not found in project root")
-    try:
-        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        raise ChatError(500, "config.json is not valid JSON")
-    return config.get("model") or None
+    model = os.environ.get("CLAUDE_MODEL")
+    if model:
+        return model
+    if CONFIG_PATH.exists():
+        try:
+            config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            if config.get("model"):
+                return config["model"]
+        except json.JSONDecodeError:
+            pass
+    return DEFAULT_MODEL
 
 
 def load_notes():
@@ -103,52 +131,42 @@ def build_system_prompt(notes):
     )
 
 
-def build_prompt(history, question):
-    if not history:
-        return question
-    lines = []
-    for q, a in history:
-        lines.append(f"User: {q}")
-        lines.append(f"Assistant: {a}")
-    lines.append(f"User: {question}")
-    return "\n".join(lines)
-
-
-def call_claude(model, system_prompt, prompt):
-    cmd = [
-        "claude", "-p",
-        "--system-prompt", system_prompt,
-        "--tools", "",
-        "--no-session-persistence",
-        "--output-format", "json",
-    ]
-    if model:
-        cmd += ["--model", model]
-    cmd.append(prompt)
-
+def call_anthropic(api_key, model, system_prompt, messages):
+    body = json.dumps({
+        "model": model,
+        "max_tokens": MAX_TOKENS,
+        "system": system_prompt,
+        "messages": messages,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        ANTHROPIC_API_URL,
+        data=body,
+        method="POST",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_VERSION,
+            "content-type": "application/json",
+        },
+    )
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, text=True,
-            timeout=CLAUDE_TIMEOUT_SECONDS, cwd=str(ROOT_DIR),
-        )
-    except FileNotFoundError:
-        raise ChatError(500, "claude CLI not found - install Claude Code and run `claude auth login`")
-    except subprocess.TimeoutExpired:
-        raise ChatError(504, "claude CLI timed out")
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        try:
+            msg = json.loads(detail).get("error", {}).get("message", detail)
+        except json.JSONDecodeError:
+            msg = detail
+        raise ChatError(502, f"Anthropic API error: {msg}")
+    except urllib.error.URLError as e:
+        raise ChatError(502, f"Could not reach the Anthropic API: {e.reason}")
 
-    try:
-        result = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        detail = (proc.stderr or proc.stdout or "").strip()[:500]
-        raise ChatError(502, f"claude CLI did not return JSON: {detail or 'no output'}")
-
-    if result.get("is_error"):
-        raise ChatError(502, result.get("result") or "claude CLI reported an error")
-
-    return (result.get("result") or "").strip()
+    text_parts = [b.get("text", "") for b in result.get("content", []) if b.get("type") == "text"]
+    return "".join(text_parts).strip()
 
 
 def handle_chat(question, session_id):
+    api_key = load_api_key()
     model = load_model()
     nodes = load_notes()
     top_notes = score_notes(question, nodes)
@@ -157,13 +175,14 @@ def handle_chat(question, session_id):
     with SESSIONS_LOCK:
         history = list(SESSIONS.setdefault(session_id, []))
 
-    prompt = build_prompt(history, question)
-    answer = call_claude(model, system_prompt, prompt)
+    messages = history + [{"role": "user", "content": question}]
+    answer = call_anthropic(api_key, model, system_prompt, messages)
 
     with SESSIONS_LOCK:
         h = SESSIONS.setdefault(session_id, [])
-        h.append((question, answer))
-        del h[:-MAX_HISTORY_TURNS]
+        h.append({"role": "user", "content": question})
+        h.append({"role": "assistant", "content": answer})
+        del h[:-MAX_HISTORY_MESSAGES]
 
     return {
         "answer": answer,
@@ -217,7 +236,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 def main():
     with http.server.ThreadingHTTPServer(("0.0.0.0", PORT), Handler) as httpd:
-        print(f"Serving {VIEWER_DIR} at http://localhost:{PORT}/")
+        print(f"Serving {VIEWER_DIR} on port {PORT}")
         httpd.serve_forever()
 
 
