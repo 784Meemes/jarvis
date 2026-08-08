@@ -369,6 +369,52 @@
   #chat-send:disabled { opacity: 0.4; cursor: default; }
   #chat-input:focus-visible,
   #chat-send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  #chat-mic {
+    flex: none;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: rgba(238, 240, 251, 0.05);
+    color: var(--dim);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  #chat-mic:hover:not(:disabled) { border-color: var(--accent-dim); color: var(--starlight); }
+  #chat-mic:disabled { opacity: 0.3; cursor: not-allowed; }
+  #chat-mic:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #chat-mic.listening {
+    border-color: rgba(255, 90, 90, 0.55);
+    color: #ff5a5a;
+    background: rgba(255, 90, 90, 0.12);
+    animation: mic-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes mic-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(255, 90, 90, 0.35); }
+    50% { box-shadow: 0 0 0 8px rgba(255, 90, 90, 0); }
+  }
+
+  #chat-status {
+    width: min(640px, 100%);
+    min-height: 16px;
+    margin-bottom: 8px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    color: var(--dim);
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  #chat-status.visible { opacity: 1; }
+  #chat-status .dot {
+    color: var(--accent);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  #chat-status.listening .dot { color: #ff5a5a; }
 </style>
 </head>
 <body>
@@ -395,7 +441,9 @@
 
 <div id="chatdock">
   <div id="chat-transcript" aria-live="polite"></div>
+  <div id="chat-status" aria-live="polite"></div>
   <form id="chat-form" autocomplete="off">
+    <button id="chat-mic" type="button" aria-label="Speak your question">🎙</button>
     <input id="chat-input" type="text" placeholder="Ask your galaxy…" autocomplete="off" />
     <button id="chat-send" type="submit" aria-label="Ask">&#8594;</button>
   </form>
@@ -698,7 +746,132 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   var chatForm = document.getElementById("chat-form");
   var chatInput = document.getElementById("chat-input");
   var chatSend = document.getElementById("chat-send");
+  var chatMic = document.getElementById("chat-mic");
+  var chatStatus = document.getElementById("chat-status");
   var chatTranscript = document.getElementById("chat-transcript");
+
+  function setStatus(state) {
+    if (state === "listening") {
+      chatStatus.innerHTML = '<span class="dot">&#9679;</span> listening&hellip;';
+      chatStatus.className = "visible listening";
+    } else if (state === "thinking") {
+      chatStatus.innerHTML = '<span class="dot">&#9679;</span> thinking&hellip;';
+      chatStatus.className = "visible";
+    } else {
+      chatStatus.textContent = "";
+      chatStatus.className = "";
+    }
+  }
+
+  // ---- voice out: speechSynthesis, preferring a British English voice ----
+  var synth = window.speechSynthesis;
+  var chosenVoice = null;
+  var audioUnlocked = false;
+
+  function pickVoice() {
+    if (!synth) return null;
+    var voices = synth.getVoices() || [];
+    if (!voices.length) return null;
+    return (
+      voices.find(function (v) { return v.lang === "en-GB"; }) ||
+      voices.find(function (v) { return /^en-GB/i.test(v.lang); }) ||
+      voices.find(function (v) { return /british|uk english/i.test(v.name); }) ||
+      voices.find(function (v) { return /^en/i.test(v.lang); }) ||
+      voices[0]
+    );
+  }
+
+  if (synth) {
+    chosenVoice = pickVoice();
+    synth.addEventListener("voiceschanged", function () { chosenVoice = pickVoice(); });
+  }
+
+  // Browsers hold speechSynthesis until a real user gesture unlocks it; fire
+  // a near-silent utterance on the very first interaction so later, async
+  // (post-fetch) speak() calls aren't silently dropped.
+  function unlockAudio() {
+    if (audioUnlocked || !synth) return;
+    audioUnlocked = true;
+    try {
+      var primer = new SpeechSynthesisUtterance(" ");
+      primer.volume = 0;
+      synth.speak(primer);
+    } catch (e) { /* ignore */ }
+  }
+  document.addEventListener("pointerdown", unlockAudio, { once: true });
+
+  function speak(text) {
+    if (!synth || !text) return;
+    try {
+      synth.cancel();
+      var utter = new SpeechSynthesisUtterance(text);
+      if (chosenVoice) utter.voice = chosenVoice;
+      utter.lang = chosenVoice ? chosenVoice.lang : "en-GB";
+      utter.rate = 1;
+      utter.pitch = 1;
+      synth.speak(utter);
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---- voice in: webkitSpeechRecognition mic button ----------------------
+  var SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+  var recognition = null;
+  var recognizing = false;
+
+  if (SpeechRecognitionCtor) {
+    recognition = new SpeechRecognitionCtor();
+    recognition.lang = "en-GB";
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = function () {
+      recognizing = true;
+      chatMic.classList.add("listening");
+      setStatus("listening");
+    };
+
+    recognition.onresult = function (e) {
+      var transcript = e.results[0][0].transcript.trim();
+      if (transcript) {
+        chatInput.value = transcript;
+        askGalaxy(transcript);
+        chatInput.value = "";
+      }
+    };
+
+    recognition.onerror = function (e) {
+      recognizing = false;
+      chatMic.classList.remove("listening");
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        setStatus("");
+        chatStatus.textContent = "mic access blocked — allow it in the browser's address-bar permissions";
+        chatStatus.className = "visible";
+      } else if (e.error !== "no-speech" && e.error !== "aborted") {
+        setStatus("");
+      }
+    };
+
+    recognition.onend = function () {
+      recognizing = false;
+      chatMic.classList.remove("listening");
+      if (chatStatus.classList.contains("listening")) setStatus("");
+    };
+
+    chatMic.addEventListener("click", function () {
+      unlockAudio();
+      if (recognizing) {
+        recognition.stop();
+        return;
+      }
+      try {
+        recognition.start();
+      } catch (e) { /* already started */ }
+    });
+  } else {
+    chatMic.disabled = true;
+    chatMic.title = "Speech recognition isn't supported in this browser — try Chrome";
+  }
 
   function addChatEntry(question) {
     var entry = document.createElement("div");
@@ -720,8 +893,10 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   }
 
   function askGalaxy(question) {
+    unlockAudio();
     var ui = addChatEntry(question);
     chatSend.disabled = true;
+    setStatus("thinking");
 
     fetch("/chat", {
       method: "POST",
@@ -734,6 +909,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
       .then(function (result) {
         chatSend.disabled = false;
         ui.entry.classList.remove("pending");
+        setStatus("");
 
         if (!result.ok || result.data.error) {
           ui.answerEl.classList.add("error");
@@ -742,7 +918,9 @@ import * as THREE from "https://esm.sh/three@0.180.0";
         }
 
         chatSessionId = result.data.session_id || chatSessionId;
-        ui.answerEl.textContent = result.data.answer || "(no answer)";
+        var answer = result.data.answer || "(no answer)";
+        ui.answerEl.textContent = answer;
+        speak(answer);
 
         var nodeIds = result.data.nodes || [];
         if (nodeIds.length) {
@@ -765,6 +943,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
       .catch(function () {
         chatSend.disabled = false;
         ui.entry.classList.remove("pending");
+        setStatus("");
         ui.answerEl.classList.add("error");
         ui.answerEl.textContent = "Could not reach the server.";
       });
@@ -772,6 +951,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
 
   chatForm.addEventListener("submit", function (e) {
     e.preventDefault();
+    unlockAudio();
     var question = chatInput.value.trim();
     if (!question) return;
     chatInput.value = "";
