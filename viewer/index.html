@@ -531,6 +531,24 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     neighborLinks[node.id].forEach(function (l) { highlightLinks.add(l); });
   }
 
+  // link.source/target start as raw ids but get mutated into node object
+  // references once the force simulation takes over - this reads either.
+  function linkEndpointId(endpoint) {
+    return endpoint && typeof endpoint === "object" ? endpoint.id : endpoint;
+  }
+
+  // Lights up a whole set of nodes (e.g. every source an answer drew on)
+  // plus the links directly connecting them, with no single node "selected".
+  function setClusterHighlight(ids) {
+    clearHighlight();
+    ids.forEach(function (id) { highlightNodes.add(id); });
+    links.forEach(function (l) {
+      if (highlightNodes.has(linkEndpointId(l.source)) && highlightNodes.has(linkEndpointId(l.target))) {
+        highlightLinks.add(l);
+      }
+    });
+  }
+
   // ---- three.js glow sprite, shared texture ------------------------------
   function makeGlowTexture() {
     var size = 128;
@@ -628,10 +646,10 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     .onBackgroundClick(closePanel)
     .cooldownTime(4000);
 
-  // dim non-highlighted nodes/links once something is selected
+  // dim non-highlighted nodes/links whenever a selection or cluster is lit
   Graph.nodeThreeObject(function (node) {
     var obj = makeNodeObject(node);
-    var dimmed = selectedId !== null && !highlightNodes.has(node.id);
+    var dimmed = highlightNodes.size > 0 && !highlightNodes.has(node.id);
     obj.children.forEach(function (child) {
       if (child.material) {
         child.material.transparent = true;
@@ -726,6 +744,35 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     );
   }
 
+  // Frames the whole set of cluster nodes in view, rather than flying to
+  // any single one of them: centers on their centroid and backs off far
+  // enough (based on their spread) that all of them stay on screen.
+  function flyToCluster(clusterNodes) {
+    if (!clusterNodes.length) return;
+    var cx = 0, cy = 0, cz = 0;
+    clusterNodes.forEach(function (n) { cx += n.x || 0; cy += n.y || 0; cz += n.z || 0; });
+    cx /= clusterNodes.length; cy /= clusterNodes.length; cz /= clusterNodes.length;
+
+    var spread = 0;
+    clusterNodes.forEach(function (n) {
+      var d = Math.hypot((n.x || 0) - cx, (n.y || 0) - cy, (n.z || 0) - cz);
+      if (d > spread) spread = d;
+    });
+
+    var distance = Math.max(260, spread * 2.3 + 200);
+    var dirLen = Math.hypot(cx, cy, cz) || 1;
+    controls.autoRotate = false;
+    Graph.cameraPosition(
+      {
+        x: cx + (cx / dirLen || 0.001) * distance,
+        y: cy + (cy / dirLen || 0.001) * distance,
+        z: cz + (cz / dirLen || 0.001) * distance
+      },
+      { x: cx, y: cy, z: cz },
+      1600
+    );
+  }
+
   function focusNode(node) {
     setHighlight(node);
     flyTo(node);
@@ -739,6 +786,31 @@ import * as THREE from "https://esm.sh/three@0.180.0";
       return;
     }
     focusNode(node);
+  }
+
+  var CLUSTER_THRESHOLD = 4;
+
+  function focusCluster(nodeIds) {
+    var clusterNodes = nodeIds.map(function (id) { return nodesById[id]; }).filter(Boolean);
+    if (!clusterNodes.length) return;
+    panel.classList.remove("open");
+    setClusterHighlight(nodeIds);
+    flyToCluster(clusterNodes);
+    Graph.refresh();
+  }
+
+  // Called with the source node ids an answer drew on, to make the galaxy
+  // visually "prove" where the answer came from: fly to and open the one
+  // top source, or - if the answer spanned a whole cluster of notes - light
+  // up the cluster instead of picking a single node to fly to.
+  function revealSources(nodeIds) {
+    if (!nodeIds || !nodeIds.length) return;
+    if (nodeIds.length >= CLUSTER_THRESHOLD) {
+      focusCluster(nodeIds);
+      return;
+    }
+    var top = nodesById[nodeIds[0]];
+    if (top) focusNode(top);
   }
 
   // ---- chat dock: ask the galaxy a question --------------------------
@@ -799,6 +871,17 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     } catch (e) { /* ignore */ }
   }
   document.addEventListener("pointerdown", unlockAudio, { once: true });
+
+  // Safety net on top of the "answer in 2-3 sentences" system prompt: the
+  // note itself is visible on screen, so speech never needs to read more
+  // than a short spoken answer - cut at the nearest sentence boundary.
+  var SPEECH_CHAR_LIMIT = 480;
+  function truncateForSpeech(text) {
+    if (text.length <= SPEECH_CHAR_LIMIT) return text;
+    var cut = text.slice(0, SPEECH_CHAR_LIMIT);
+    var lastStop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("! "), cut.lastIndexOf("? "));
+    return lastStop > 80 ? cut.slice(0, lastStop + 1) : cut.trim() + "…";
+  }
 
   function speak(text) {
     if (!synth || !text) return;
@@ -919,10 +1002,12 @@ import * as THREE from "https://esm.sh/three@0.180.0";
 
         chatSessionId = result.data.session_id || chatSessionId;
         var answer = result.data.answer || "(no answer)";
-        ui.answerEl.textContent = answer;
-        speak(answer);
-
         var nodeIds = result.data.nodes || [];
+
+        ui.answerEl.textContent = answer;
+        speak(truncateForSpeech(answer));
+        revealSources(nodeIds);
+
         if (nodeIds.length) {
           var chips = document.createElement("div");
           chips.className = "chat-sources";
