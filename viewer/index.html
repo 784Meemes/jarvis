@@ -300,6 +300,13 @@
   .chat-answer.error { color: #ffb0a0; border-color: rgba(255, 120, 100, 0.35); }
   @keyframes pulse { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
 
+  .chat-boot .chat-answer {
+    font-style: italic;
+    color: var(--dim);
+    border-color: var(--accent-dim);
+    background: rgba(255, 184, 107, 0.05);
+  }
+
   .chat-sources {
     display: flex;
     flex-wrap: wrap;
@@ -822,6 +829,29 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   var chatStatus = document.getElementById("chat-status");
   var chatTranscript = document.getElementById("chat-transcript");
 
+  // ---- boot greeting: shown the instant the page loads; spoken as soon as
+  // the browser lets audio through (see unlockAudio below) ----
+  var bootGreetingText = "Good evening, sir. " + nodes.length + " notes indexed, all present and accounted for.";
+  var bootGreetingSpoken = false;
+
+  function showBootGreeting() {
+    var entry = document.createElement("div");
+    entry.className = "chat-entry chat-boot";
+    var a = document.createElement("div");
+    a.className = "chat-answer";
+    a.textContent = bootGreetingText;
+    entry.appendChild(a);
+    chatTranscript.appendChild(entry);
+    chatTranscript.scrollTop = chatTranscript.scrollHeight;
+  }
+  showBootGreeting();
+
+  function speakBootGreeting() {
+    if (bootGreetingSpoken) return;
+    bootGreetingSpoken = true;
+    speak(bootGreetingText);
+  }
+
   function setStatus(state) {
     if (state === "listening") {
       chatStatus.innerHTML = '<span class="dot">&#9679;</span> listening&hellip;';
@@ -858,17 +888,14 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     synth.addEventListener("voiceschanged", function () { chosenVoice = pickVoice(); });
   }
 
-  // Browsers hold speechSynthesis until a real user gesture unlocks it; fire
-  // a near-silent utterance on the very first interaction so later, async
-  // (post-fetch) speak() calls aren't silently dropped.
+  // Browsers hold speechSynthesis until a real user gesture unlocks it, so
+  // the boot greeting can only be spoken (not just shown) once the visitor
+  // has clicked/tapped once - this is that first utterance, doing double
+  // duty as the unlock so later, async (post-fetch) speak() calls work too.
   function unlockAudio() {
     if (audioUnlocked || !synth) return;
     audioUnlocked = true;
-    try {
-      var primer = new SpeechSynthesisUtterance(" ");
-      primer.volume = 0;
-      synth.speak(primer);
-    } catch (e) { /* ignore */ }
+    speakBootGreeting();
   }
   document.addEventListener("pointerdown", unlockAudio, { once: true });
 

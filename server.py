@@ -98,18 +98,34 @@ def tokenize(text):
 
 
 def score_notes(question, nodes):
-    """Rank notes by keyword overlap with the question; title hits count 3x."""
+    """Rank notes by keyword overlap with the question; title hits count 3x.
+
+    Notes with zero overlap are dropped rather than falling back to an
+    arbitrary top-N - an empty result means "not a notes question" (small
+    talk, banter), which the caller uses to skip the notes context entirely
+    and the viewer uses to leave the camera alone.
+    """
     q_words = set(tokenize(question))
     if not q_words or not nodes:
-        return nodes[:TOP_N]
+        return []
     scored = []
     for node in nodes:
         title_words = set(tokenize(node.get("label", "")))
         body_words = set(tokenize(node.get("excerpt", "")))
         score = 3 * len(q_words & title_words) + len(q_words & body_words)
-        scored.append((score, node))
+        if score > 0:
+            scored.append((score, node))
     scored.sort(key=lambda pair: (-pair[0], pair[1].get("id", 0)))
     return [node for _, node in scored[:TOP_N]]
+
+
+BUTLER_PERSONA = (
+    "You are a dry, impeccably polite English butler with a razor wit, in "
+    "service to the owner of this personal notes vault. Address the owner "
+    "as \"sir\" occasionally - not in every sentence, only when it lands. "
+    "One genuinely funny line beats three bland ones, so exercise restraint: "
+    "wit should feel earned, not forced into every reply."
+)
 
 
 def build_system_prompt(notes):
@@ -118,14 +134,23 @@ def build_system_prompt(notes):
             f"### {n.get('label', 'Untitled')}  [{n.get('group', '')}]\n{n.get('excerpt', '')}"
             for n in notes
         )
-    else:
-        notes_block = "(no notes available)"
+        return (
+            BUTLER_PERSONA + "\n\n"
+            "The owner has asked something about their notes. Answer using "
+            "ONLY the notes below - never rely on outside knowledge, even if "
+            "you know more about the topic. Reply with exactly one witty "
+            "sentence, followed by the actual facts the owner needs, in your "
+            "own words - never recite or quote a note back verbatim, since it "
+            "is already open on screen right beside you. If the notes plainly "
+            "don't cover the question, say so plainly (and wittily) rather "
+            "than guessing.\n\nNOTES:\n" + notes_block
+        )
     return (
-        "You are the voice of a personal notes vault, answering questions about "
-        "its contents. Answer ONLY using the notes provided below - never rely "
-        "on outside knowledge, even if you know more about the topic. Answer in "
-        "2-3 sentences. If the notes don't cover the question, say so plainly "
-        "instead of guessing.\n\nNOTES:\n" + notes_block
+        BUTLER_PERSONA + "\n\n"
+        "This is small talk, banter, or otherwise not a question about the "
+        "notes vault - not a request to look anything up. Stay in character "
+        "and reply briefly, in 1-3 sentences. Do not invent facts about the "
+        "notes and do not pretend to consult one."
     )
 
 
