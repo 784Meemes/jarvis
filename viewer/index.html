@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Knowledge Galaxy</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #000003;
+    --panel-bg: rgba(8, 10, 22, 0.88);
+    --panel-border: rgba(140, 160, 255, 0.25);
+    --text: #e7e9f7;
+    --text-dim: #9aa0c0;
+    --accent: #8ecbff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: var(--text);
+  }
+
+  #graph {
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+  }
+
+  #hint {
+    position: fixed;
+    top: 18px;
+    left: 22px;
+    z-index: 5;
+    font-size: 13px;
+    letter-spacing: 0.03em;
+    color: var(--text-dim);
+    pointer-events: none;
+    text-transform: uppercase;
+  }
+  #hint b { color: var(--text); font-weight: 600; }
+
+  #legend {
+    position: fixed;
+    bottom: 18px;
+    left: 22px;
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+    pointer-events: none;
+  }
+  #legend .row { display: flex; align-items: center; gap: 8px; }
+  #legend .swatch {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    box-shadow: 0 0 8px 1px currentColor;
+  }
+
+  #panel {
+    position: fixed;
+    top: 0;
+    right: 0;
+    height: 100%;
+    width: min(380px, 88vw);
+    background: var(--panel-bg);
+    backdrop-filter: blur(10px);
+    border-left: 1px solid var(--panel-border);
+    box-shadow: -20px 0 60px rgba(0, 0, 0, 0.5);
+    transform: translateX(100%);
+    transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+    z-index: 10;
+    padding: 28px 26px;
+    overflow-y: auto;
+  }
+  #panel.open { transform: translateX(0); }
+
+  #panel-close {
+    position: absolute;
+    top: 18px;
+    right: 18px;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+  #panel-close:hover { color: var(--text); }
+
+  #panel-group {
+    display: inline-block;
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid rgba(142, 203, 255, 0.35);
+    border-radius: 999px;
+    padding: 3px 10px;
+    margin-bottom: 14px;
+  }
+
+  #panel-title {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 4px;
+    line-height: 1.25;
+    padding-right: 20px;
+  }
+
+  #panel-path {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin: 0 0 18px;
+    word-break: break-all;
+  }
+
+  #panel-excerpt {
+    font-size: 14px;
+    line-height: 1.6;
+    color: var(--text);
+    white-space: pre-wrap;
+    margin: 0 0 22px;
+  }
+
+  #panel-links-label {
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    margin: 0 0 10px;
+  }
+
+  #panel-links {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  #panel-links li a {
+    display: block;
+    color: var(--text);
+    text-decoration: none;
+    font-size: 13.5px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: rgba(255, 255, 255, 0.03);
+    transition: background 0.15s, border-color 0.15s;
+  }
+  #panel-links li a:hover {
+    background: rgba(142, 203, 255, 0.1);
+    border-color: rgba(142, 203, 255, 0.3);
+  }
+  #panel-empty {
+    font-size: 13px;
+    color: var(--text-dim);
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+
+<div id="hint"><b>Knowledge Galaxy</b> — drag to orbit, scroll to zoom, click a node to explore</div>
+
+<div id="legend"></div>
+
+<div id="graph"></div>
+
+<div id="panel">
+  <button id="panel-close" aria-label="Close">&times;</button>
+  <span id="panel-group"></span>
+  <h2 id="panel-title"></h2>
+  <p id="panel-path"></p>
+  <p id="panel-excerpt"></p>
+  <p id="panel-links-label">Connected notes</p>
+  <ul id="panel-links"></ul>
+</div>
+
+<script src="graph-data.js"></script>
+<script type="module">
+import ForceGraph3D from "https://esm.sh/3d-force-graph@1.80.0?deps=three@0.180.0";
+import * as THREE from "https://esm.sh/three@0.180.0";
+
+(function () {
+  "use strict";
+
+  var data = window.GRAPH || { nodes: [], links: [] };
+  var nodes = data.nodes || [];
+  var links = data.links || [];
+
+  // ---- color palette, assigned per group in first-seen order ----------
+  var PALETTE = [
+    "#8ecbff", // blue
+    "#ff8ecb", // pink
+    "#c7ff8e", // green
+    "#ffcf8e", // amber
+    "#c08eff", // violet
+    "#8efff2", // teal
+    "#ff8e8e", // red
+    "#ffe98e"  // yellow
+  ];
+  var groupColors = {};
+  var groupOrder = [];
+  nodes.forEach(function (n) {
+    if (!(n.group in groupColors)) {
+      groupColors[n.group] = PALETTE[groupOrder.length % PALETTE.length];
+      groupOrder.push(n.group);
+    }
+  });
+
+  var legendEl = document.getElementById("legend");
+  groupOrder.forEach(function (g) {
+    var row = document.createElement("div");
+    row.className = "row";
+    var sw = document.createElement("span");
+    sw.className = "swatch";
+    sw.style.color = groupColors[g];
+    sw.style.background = groupColors[g];
+    var label = document.createElement("span");
+    label.textContent = g;
+    row.appendChild(sw);
+    row.appendChild(label);
+    legendEl.appendChild(row);
+  });
+
+  // ---- adjacency, built once from links (source/target are numeric ids) ----
+  var neighborIds = {};   // id -> Set of neighbor ids
+  var neighborLinks = {}; // id -> Set of link objects touching this node
+  nodes.forEach(function (n) { neighborIds[n.id] = new Set(); neighborLinks[n.id] = new Set(); });
+  links.forEach(function (l) {
+    neighborIds[l.source].add(l.target);
+    neighborIds[l.target].add(l.source);
+    neighborLinks[l.source].add(l);
+    neighborLinks[l.target].add(l);
+  });
+
+  var nodesById = {};
+  nodes.forEach(function (n) { nodesById[n.id] = n; });
+
+  // ---- highlight state --------------------------------------------------
+  var highlightNodes = new Set();
+  var highlightLinks = new Set();
+  var selectedId = null;
+
+  function clearHighlight() {
+    highlightNodes.clear();
+    highlightLinks.clear();
+    selectedId = null;
+  }
+
+  function setHighlight(node) {
+    clearHighlight();
+    selectedId = node.id;
+    highlightNodes.add(node.id);
+    neighborIds[node.id].forEach(function (id) { highlightNodes.add(id); });
+    neighborLinks[node.id].forEach(function (l) { highlightLinks.add(l); });
+  }
+
+  // ---- three.js glow sprite, shared texture ------------------------------
+  function makeGlowTexture() {
+    var size = 128;
+    var canvas = document.createElement("canvas");
+    canvas.width = canvas.height = size;
+    var ctx = canvas.getContext("2d");
+    var grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    grad.addColorStop(0, "rgba(255,255,255,1)");
+    grad.addColorStop(0.25, "rgba(255,255,255,0.6)");
+    grad.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+    return new THREE.CanvasTexture(canvas);
+  }
+  var glowTexture = makeGlowTexture();
+
+  function makeNodeObject(node) {
+    var group = new THREE.Group();
+    var color = groupColors[node.group] || "#ffffff";
+
+    var core = new THREE.Mesh(
+      new THREE.SphereGeometry(3.2, 16, 16),
+      new THREE.MeshBasicMaterial({ color: color })
+    );
+    group.add(core);
+
+    var glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: glowTexture,
+      color: color,
+      transparent: true,
+      opacity: 0.85,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    }));
+    glow.scale.set(22, 22, 1);
+    glow.userData.isGlow = true;
+    group.add(glow);
+
+    group.userData.nodeId = node.id;
+    return group;
+  }
+
+  // ---- starfield, added straight into the graph's own three.js scene ----
+  function makeStarfield() {
+    var starGroup = new THREE.Group();
+    var layers = [
+      { count: 2200, radius: 3200, size: 2.2, opacity: 0.85 },
+      { count: 1400, radius: 5200, size: 3.4, opacity: 0.55 },
+      { count: 900, radius: 7800, size: 5.0, opacity: 0.35 }
+    ];
+    layers.forEach(function (layer) {
+      var positions = new Float32Array(layer.count * 3);
+      for (var i = 0; i < layer.count; i++) {
+        var r = layer.radius * (0.5 + 0.5 * Math.random());
+        var theta = Math.acos(2 * Math.random() - 1);
+        var phi = 2 * Math.PI * Math.random();
+        positions[i * 3] = r * Math.sin(theta) * Math.cos(phi);
+        positions[i * 3 + 1] = r * Math.sin(theta) * Math.sin(phi);
+        positions[i * 3 + 2] = r * Math.cos(theta);
+      }
+      var geom = new THREE.BufferGeometry();
+      geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+      var mat = new THREE.PointsMaterial({
+        color: 0xffffff,
+        size: layer.size,
+        transparent: true,
+        opacity: layer.opacity,
+        sizeAttenuation: true,
+        map: glowTexture,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending
+      });
+      starGroup.add(new THREE.Points(geom, mat));
+    });
+    return starGroup;
+  }
+
+  // ---- build the graph ----------------------------------------------------
+  var elem = document.getElementById("graph");
+  var Graph = ForceGraph3D()(elem)
+    .backgroundColor("#000003")
+    .graphData({ nodes: nodes, links: links })
+    .nodeId("id")
+    .nodeLabel(function (n) { return n.label; })
+    .nodeThreeObjectExtend(false)
+    .linkColor(function (l) {
+      return highlightLinks.has(l) ? "#ffffff" : "rgba(140,160,220,0.35)";
+    })
+    .linkWidth(function (l) { return highlightLinks.has(l) ? 1.6 : 0.6; })
+    .linkOpacity(0.4)
+    .linkDirectionalParticles(function (l) { return highlightLinks.has(l) ? 3 : 0; })
+    .linkDirectionalParticleWidth(1.8)
+    .linkDirectionalParticleSpeed(0.006)
+    .onNodeClick(handleNodeClick)
+    .onBackgroundClick(closePanel)
+    .cooldownTime(4000);
+
+  // dim non-highlighted nodes/links once something is selected
+  Graph.nodeThreeObject(function (node) {
+    var obj = makeNodeObject(node);
+    var dimmed = selectedId !== null && !highlightNodes.has(node.id);
+    obj.children.forEach(function (child) {
+      if (child.material) {
+        child.material.transparent = true;
+        child.material.opacity = dimmed ? 0.15 : (child.userData && child.userData.isGlow ? 0.85 : 1);
+      }
+    });
+    var scale = node.id === selectedId ? 1.6 : (highlightNodes.has(node.id) ? 1.25 : 1);
+    obj.scale.set(scale, scale, scale);
+    return obj;
+  });
+
+  // starfield lives directly in the scene, independent of the node graph
+  Graph.scene().add(makeStarfield());
+  Graph.scene().fog = new THREE.FogExp2(0x00000a, 0.00028);
+
+  // slow idle drift via OrbitControls' built-in auto-rotate
+  var controls = Graph.controls();
+  controls.autoRotate = true;
+  controls.autoRotateSpeed = 0.35;
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
+
+  // gently space nodes out in 3D so the galaxy doesn't collapse flat
+  Graph.d3Force("charge").strength(-160);
+
+  window.addEventListener("resize", function () {
+    Graph.width(window.innerWidth).height(window.innerHeight);
+  });
+
+  // ---- side panel -----------------------------------------------------
+  var panel = document.getElementById("panel");
+  var panelGroup = document.getElementById("panel-group");
+  var panelTitle = document.getElementById("panel-title");
+  var panelPath = document.getElementById("panel-path");
+  var panelExcerpt = document.getElementById("panel-excerpt");
+  var panelLinks = document.getElementById("panel-links");
+  var panelLinksLabel = document.getElementById("panel-links-label");
+  document.getElementById("panel-close").addEventListener("click", closePanel);
+
+  function openPanel(node) {
+    panelGroup.textContent = node.group;
+    panelGroup.style.color = groupColors[node.group];
+    panelGroup.style.borderColor = groupColors[node.group];
+    panelTitle.textContent = node.label;
+    panelPath.textContent = node.path || "";
+    panelExcerpt.textContent = node.excerpt || "";
+
+    panelLinks.innerHTML = "";
+    var neighbors = Array.from(neighborIds[node.id]).map(function (id) { return nodesById[id]; })
+      .filter(Boolean)
+      .sort(function (a, b) { return a.label.localeCompare(b.label); });
+
+    panelLinksLabel.style.display = neighbors.length ? "block" : "none";
+    if (!neighbors.length) {
+      var empty = document.createElement("li");
+      empty.id = "panel-empty";
+      empty.textContent = "No connections yet";
+      panelLinks.appendChild(empty);
+    } else {
+      neighbors.forEach(function (nb) {
+        var li = document.createElement("li");
+        var a = document.createElement("a");
+        a.href = "#";
+        a.textContent = nb.label;
+        a.addEventListener("click", function (e) {
+          e.preventDefault();
+          focusNode(nb);
+        });
+        li.appendChild(a);
+        panelLinks.appendChild(li);
+      });
+    }
+
+    panel.classList.add("open");
+  }
+
+  function closePanel() {
+    panel.classList.remove("open");
+    clearHighlight();
+    controls.autoRotate = true;
+    Graph.refresh();
+  }
+
+  function flyTo(node) {
+    var distance = 140;
+    var distRatio = 1 + distance / Math.hypot(node.x || 1, node.y || 1, node.z || 1);
+    controls.autoRotate = false;
+    Graph.cameraPosition(
+      { x: (node.x || 0) * distRatio, y: (node.y || 0) * distRatio, z: (node.z || 0) * distRatio },
+      node,
+      1400
+    );
+  }
+
+  function focusNode(node) {
+    setHighlight(node);
+    flyTo(node);
+    openPanel(node);
+    Graph.refresh();
+  }
+
+  function handleNodeClick(node) {
+    if (selectedId === node.id) {
+      closePanel();
+      return;
+    }
+    focusNode(node);
+  }
+})();
+</script>
+</body>
+</html>
