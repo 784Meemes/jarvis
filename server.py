@@ -17,10 +17,11 @@ POST /remember  {"text": str} -> text starting with "remember that..." gets
                 id of its closest relative (for the viewer to spawn it at
                 that node's position), and a one-line spoken confirmation.
 
-The API key and model both come from config.json in the project root, which
-sits outside viewer/ and is therefore never served to the browser - it is
-read directly off disk by this process only. Paste your key into the
-"api_key" field of config.json before starting the server.
+The API key and model come from config.json in the project root (never
+served to the browser - it sits outside viewer/ and is read directly off
+disk by this process only), or from the ANTHROPIC_API_KEY / CLAUDE_MODEL
+environment variables as a fallback for hosted deployments where
+config.json isn't present (it's deliberately excluded from git).
 """
 import datetime
 import http.server
@@ -76,8 +77,11 @@ class ChatError(Exception):
 
 
 def load_config():
+    # config.json is deliberately not committed to git (it can hold a real
+    # API key locally), so a fresh clone or hosted deploy legitimately won't
+    # have one - that's fine, load_api_key/load_model fall back to env vars.
     if not CONFIG_PATH.exists():
-        raise ChatError(500, "config.json not found in the project root")
+        return {}
     try:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -86,18 +90,22 @@ def load_config():
 
 def load_api_key(config):
     api_key = config.get("api_key")
-    if not api_key or api_key == "PUT-YOUR-KEY-HERE":
-        raise ChatError(
-            400,
-            "No API key configured. Paste your Anthropic API key into the "
-            "\"api_key\" field of config.json (project root) and restart "
-            "the server.",
-        )
-    return api_key
+    if api_key and api_key != "PUT-YOUR-KEY-HERE":
+        return api_key
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if api_key:
+        return api_key
+    raise ChatError(
+        400,
+        "No API key configured. Paste your Anthropic API key into the "
+        "\"api_key\" field of config.json for local use, or set the "
+        "ANTHROPIC_API_KEY environment variable for a hosted deployment, "
+        "and restart the server.",
+    )
 
 
 def load_model(config):
-    return config.get("model") or DEFAULT_MODEL
+    return config.get("model") or os.environ.get("CLAUDE_MODEL") or DEFAULT_MODEL
 
 
 GRAPH_JS_PREFIX = "window.GRAPH = "
