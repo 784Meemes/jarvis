@@ -113,6 +113,32 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
+  #mute-toggle {
+    position: fixed;
+    top: 20px;
+    right: 24px;
+    z-index: 5;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: rgba(11, 13, 24, 0.55);
+    backdrop-filter: blur(6px);
+    color: var(--starlight);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    animation: fade-in 1.1s ease-out 0.15s both;
+  }
+  #mute-toggle:hover { border-color: var(--dim); }
+  #mute-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #mute-toggle.muted {
+    color: var(--dim);
+    border-color: rgba(255, 90, 90, 0.4);
+    background: rgba(255, 90, 90, 0.08);
+  }
+
   /* ---- observation card, slide-in side panel ---- */
   #panel {
     position: fixed;
@@ -432,6 +458,8 @@
   <span class="sep">·</span>
   <span class="sub">drag to orbit &middot; scroll to zoom &middot; click a star to read</span>
 </div>
+
+<button id="mute-toggle" type="button" aria-label="Mute voice output" title="Mute the galaxy's voice">🔊</button>
 
 <div id="legend"></div>
 
@@ -998,7 +1026,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   }
 
   function speak(text) {
-    if (!synth || !text) return;
+    if (!synth || !text || muted) return;
     try {
       synth.cancel();
       var utter = new SpeechSynthesisUtterance(text);
@@ -1009,6 +1037,18 @@ import * as THREE from "https://esm.sh/three@0.180.0";
       synth.speak(utter);
     } catch (e) { /* ignore */ }
   }
+
+  // ---- mute toggle: cuts the galaxy off mid-sentence and keeps it quiet --
+  var muted = false;
+  var muteToggle = document.getElementById("mute-toggle");
+  muteToggle.addEventListener("click", function () {
+    muted = !muted;
+    muteToggle.classList.toggle("muted", muted);
+    muteToggle.textContent = muted ? "🔇" : "🔊";
+    muteToggle.title = muted ? "Unmute the galaxy's voice" : "Mute the galaxy's voice";
+    muteToggle.setAttribute("aria-label", muted ? "Unmute voice output" : "Mute voice output");
+    if (muted && synth) synth.cancel(); // stop whatever's playing right now, immediately
+  });
 
   // ---- voice in: webkitSpeechRecognition mic button ----------------------
   var SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
