@@ -51,6 +51,7 @@ ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-5"
 MAX_TOKENS = 500
+WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
 REQUEST_TIMEOUT_SECONDS = 60
 
 TOP_N = 6
@@ -184,42 +185,55 @@ def build_system_prompt(notes):
         )
     return (
         BUTLER_PERSONA + "\n\n"
-        "This is small talk, banter, or otherwise not a question about the "
-        "notes vault - not a request to look anything up. Stay in character "
-        "and reply briefly, in 1-3 sentences. Do not invent facts about the "
-        "notes and do not pretend to consult one."
+        "This is not a question about the notes vault. If it's small talk or "
+        "banter, stay in character and reply briefly, in 1-3 sentences - do "
+        "not invent facts about the notes and do not pretend to consult one. "
+        "If it's a genuine factual question the vault has nothing to do with "
+        "(current events, general knowledge, anything outside these notes), "
+        "you have a web search tool - use it when it would actually help, "
+        "then answer briefly in your own words, still in character."
     )
 
 
-def call_anthropic(api_key, model, system_prompt, messages):
-    body = json.dumps({
-        "model": model,
-        "max_tokens": MAX_TOKENS,
-        "system": system_prompt,
-        "messages": messages,
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        ANTHROPIC_API_URL,
-        data=body,
-        method="POST",
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": ANTHROPIC_VERSION,
-            "content-type": "application/json",
-        },
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")
+def call_anthropic(api_key, model, system_prompt, messages, tools=None):
+    def one_request(msgs):
+        payload = {
+            "model": model,
+            "max_tokens": MAX_TOKENS,
+            "system": system_prompt,
+            "messages": msgs,
+        }
+        if tools:
+            payload["tools"] = tools
+        req = urllib.request.Request(
+            ANTHROPIC_API_URL,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": ANTHROPIC_VERSION,
+                "content-type": "application/json",
+            },
+        )
         try:
-            msg = json.loads(detail).get("error", {}).get("message", detail)
-        except json.JSONDecodeError:
-            msg = detail
-        raise ChatError(502, f"Anthropic API error: {msg}")
-    except urllib.error.URLError as e:
-        raise ChatError(502, f"Could not reach the Anthropic API: {e.reason}")
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_SECONDS) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")
+            try:
+                msg = json.loads(detail).get("error", {}).get("message", detail)
+            except json.JSONDecodeError:
+                msg = detail
+            raise ChatError(502, f"Anthropic API error: {msg}")
+        except urllib.error.URLError as e:
+            raise ChatError(502, f"Could not reach the Anthropic API: {e.reason}")
+
+    result = one_request(messages)
+    if result.get("stop_reason") == "pause_turn":
+        # A server-side tool (web search) hit its per-turn iteration cap;
+        # resending the paused assistant turn lets the API pick back up
+        # where it left off, per Anthropic's documented pause_turn handling.
+        result = one_request(messages + [{"role": "assistant", "content": result.get("content", [])}])
 
     text_parts = [b.get("text", "") for b in result.get("content", []) if b.get("type") == "text"]
     return "".join(text_parts).strip()
@@ -237,7 +251,11 @@ def handle_chat(question, session_id):
         history = list(SESSIONS.setdefault(session_id, []))
 
     messages = history + [{"role": "user", "content": question}]
-    answer = call_anthropic(api_key, model, system_prompt, messages)
+    # Web search is only offered when nothing in the vault is relevant, so a
+    # notes question can never be answered (or the source node picked) from
+    # anything other than the notes actually shown to the model.
+    tools = None if top_notes else [WEB_SEARCH_TOOL]
+    answer = call_anthropic(api_key, model, system_prompt, messages, tools=tools)
 
     with SESSIONS_LOCK:
         h = SESSIONS.setdefault(session_id, [])
