@@ -138,10 +138,19 @@ def tokenize(text):
 def score_notes(question, nodes):
     """Rank notes by keyword overlap with the question; title hits count 3x.
 
-    Notes with zero overlap are dropped rather than falling back to an
+    A single overlapping *body* word is discarded (score < 2) - one common
+    word (e.g. "like", "way") shared with an excerpt is noise, not evidence
+    the vault covers the question, and treating it as a match wrongly routes
+    genuine outside-the-vault questions into the notes-only branch, which
+    silently disables web search for them. A single *title* word is always
+    enough on its own (weighted 3x, well past the threshold), so a real
+    one-word match on a note's subject still works.
+
+    Notes below the threshold are dropped rather than falling back to an
     arbitrary top-N - an empty result means "not a notes question" (small
-    talk, banter), which the caller uses to skip the notes context entirely
-    and the viewer uses to leave the camera alone.
+    talk, banter, or a genuine outside question), which the caller uses to
+    skip the notes context and offer web search instead, and which the
+    viewer uses to leave the camera alone.
     """
     q_words = set(tokenize(question))
     if not q_words or not nodes:
@@ -151,7 +160,7 @@ def score_notes(question, nodes):
         title_words = set(tokenize(node.get("label", "")))
         body_words = set(tokenize(node.get("excerpt", "")))
         score = 3 * len(q_words & title_words) + len(q_words & body_words)
-        if score > 0:
+        if score > 1:
             scored.append((score, node))
     scored.sort(key=lambda pair: (-pair[0], pair[1].get("id", 0)))
     return [node for _, node in scored[:TOP_N]]
