@@ -904,6 +904,11 @@ import * as THREE from "https://esm.sh/three@0.180.0";
 
   // ---- chat dock: ask the galaxy a question --------------------------
   var chatSessionId = null;
+  // True from the moment a question/capture is sent until its response
+  // comes back - blocks a second mic click or Enter from firing a
+  // concurrent request while one is still in flight, which used to let two
+  // answers land (and speak) on top of each other.
+  var requestBusy = false;
   var chatForm = document.getElementById("chat-form");
   var chatInput = document.getElementById("chat-input");
   var chatSend = document.getElementById("chat-send");
@@ -1024,6 +1029,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     };
 
     recognition.onresult = function (e) {
+      if (requestBusy) return; // a previous question is still being answered
       var transcript = e.results[0][0].transcript.trim();
       if (transcript) {
         chatInput.value = transcript;
@@ -1051,6 +1057,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     };
 
     chatMic.addEventListener("click", function () {
+      if (requestBusy) return; // belt-and-suspenders - the button is also disabled while busy
       unlockAudio();
       if (recognizing) {
         recognition.stop();
@@ -1085,9 +1092,12 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   }
 
   function askGalaxy(question) {
+    if (requestBusy) return;
+    requestBusy = true;
     unlockAudio();
     var ui = addChatEntry(question);
     chatSend.disabled = true;
+    chatMic.disabled = true;
     setStatus("thinking");
 
     fetch("/chat", {
@@ -1099,7 +1109,6 @@ import * as THREE from "https://esm.sh/three@0.180.0";
         return res.json().then(function (data) { return { ok: res.ok, data: data }; });
       })
       .then(function (result) {
-        chatSend.disabled = false;
         ui.entry.classList.remove("pending");
         setStatus("");
 
@@ -1135,11 +1144,15 @@ import * as THREE from "https://esm.sh/three@0.180.0";
         chatTranscript.scrollTop = chatTranscript.scrollHeight;
       })
       .catch(function () {
-        chatSend.disabled = false;
         ui.entry.classList.remove("pending");
         setStatus("");
         ui.answerEl.classList.add("error");
         ui.answerEl.textContent = "Could not reach the server.";
+      })
+      .finally(function () {
+        requestBusy = false;
+        chatSend.disabled = false;
+        chatMic.disabled = false;
       });
   }
 
@@ -1147,9 +1160,12 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   var REMEMBER_RE = /^\s*remember\s+that\b/i;
 
   function rememberThis(text) {
+    if (requestBusy) return;
+    requestBusy = true;
     unlockAudio();
     var ui = addChatEntry(text);
     chatSend.disabled = true;
+    chatMic.disabled = true;
     setStatus("thinking");
 
     fetch("/remember", {
@@ -1161,7 +1177,6 @@ import * as THREE from "https://esm.sh/three@0.180.0";
         return res.json().then(function (data) { return { ok: res.ok, data: data }; });
       })
       .then(function (result) {
-        chatSend.disabled = false;
         ui.entry.classList.remove("pending");
         setStatus("");
 
@@ -1178,11 +1193,15 @@ import * as THREE from "https://esm.sh/three@0.180.0";
         chatTranscript.scrollTop = chatTranscript.scrollHeight;
       })
       .catch(function () {
-        chatSend.disabled = false;
         ui.entry.classList.remove("pending");
         setStatus("");
         ui.answerEl.classList.add("error");
         ui.answerEl.textContent = "Could not reach the server.";
+      })
+      .finally(function () {
+        requestBusy = false;
+        chatSend.disabled = false;
+        chatMic.disabled = false;
       });
   }
 
@@ -1196,6 +1215,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
 
   chatForm.addEventListener("submit", function (e) {
     e.preventDefault();
+    if (requestBusy) return; // keep typed text in the box rather than discard it
     unlockAudio();
     var question = chatInput.value.trim();
     if (!question) return;
