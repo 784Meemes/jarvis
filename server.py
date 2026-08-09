@@ -50,9 +50,9 @@ TITLE_WORD_COUNT = 8
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-5"
-MAX_TOKENS = 500
+MAX_TOKENS = 4096  # generous enough for a full essay, not just a one-line answer
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
-REQUEST_TIMEOUT_SECONDS = 60
+REQUEST_TIMEOUT_SECONDS = 120  # long-form writing takes longer than a quick lookup
 
 TOP_N = 6
 MAX_HISTORY_MESSAGES = 20  # 10 question/answer turns
@@ -194,13 +194,20 @@ def build_system_prompt(notes):
         )
     return (
         BUTLER_PERSONA + "\n\n"
-        "This is not a question about the notes vault. If it's small talk or "
-        "banter, stay in character and reply briefly, in 1-3 sentences - do "
-        "not invent facts about the notes and do not pretend to consult one. "
-        "If it's a genuine factual question the vault has nothing to do with "
-        "(current events, general knowledge, anything outside these notes), "
+        "This is not a question about the notes vault. Three cases:\n"
+        "1. Small talk or banter: stay in character and reply briefly, in "
+        "1-3 sentences - do not invent facts about the notes and do not "
+        "pretend to consult one.\n"
+        "2. A genuine factual question the vault has nothing to do with "
+        "(current events, general knowledge, anything outside these notes): "
         "you have a web search tool - use it when it would actually help, "
-        "then answer briefly in your own words, still in character."
+        "then answer briefly in your own words, still in character.\n"
+        "3. A request to write, compose, or draft something - an essay, "
+        "letter, poem, story, summary, or similar: write the complete "
+        "piece as asked, well-crafted and not artificially shortened, even "
+        "if it runs to several paragraphs. A brief one-line introduction "
+        "in character is welcome, but the requested piece itself is the "
+        "point - do not summarize it away or cut it short."
     )
 
 
