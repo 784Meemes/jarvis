@@ -16,6 +16,14 @@ POST /remember  {"text": str} -> text starting with "remember that..." gets
                 it mentions or is most related to. Returns the new node, the
                 id of its closest relative (for the viewer to spawn it at
                 that node's position), and a one-line spoken confirmation.
+POST /upload    multipart/form-data, field "file" (+ optional "session_id")
+                -> reads a plain-text document (.txt/.md/.csv/.json/etc,
+                nothing binary) and attaches it to that chat session only -
+                not written to the notes vault. Every /chat call in that
+                session includes it as reference material the model can
+                draw on, alongside (not instead of) the usual notes/web
+                search/writing behavior. In-memory only, per session, capped
+                per session and per file - never persisted to disk.
 
 The API key and model come from config.json in the project root (never
 served to the browser - it sits outside viewer/ and is read directly off
@@ -57,6 +65,11 @@ REQUEST_TIMEOUT_SECONDS = 300  # a researched essay (web search + thinking) can 
 TOP_N = 6
 MAX_HISTORY_MESSAGES = 20  # 10 question/answer turns
 
+MAX_DOCS_PER_SESSION = 5
+MAX_DOC_CHARS = 8000
+MAX_UPLOAD_BYTES = 2 * 1024 * 1024  # 2MB per file
+MAX_UPLOAD_BODY_BYTES = 3 * 1024 * 1024  # multipart overhead headroom
+
 STOPWORDS = {
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
     "of", "to", "in", "on", "at", "for", "with", "and", "or", "but", "if",
@@ -69,6 +82,9 @@ STOPWORDS = {
 SESSIONS = {}  # session_id -> list of {"role": ..., "content": ...} dicts
 SESSIONS_LOCK = threading.Lock()
 GRAPH_LOCK = threading.Lock()  # guards read-modify-write of graph-data.js
+
+SESSION_DOCS = {}  # session_id -> list of {"filename": ..., "content": ...} dicts
+SESSION_DOCS_LOCK = threading.Lock()
 
 
 class ChatError(Exception):
@@ -129,6 +145,74 @@ def write_graph(graph):
 
 def load_notes():
     return load_graph().get("nodes", [])
+
+
+def parse_multipart_form(body, content_type):
+    """Minimal multipart/form-data parser (stdlib only - no cgi, which is
+    removed in Python 3.13). Handles the single-boundary case a plain
+    browser FormData/fetch upload produces; not a general MIME parser.
+    """
+    m = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not m:
+        raise ChatError(400, "Missing multipart boundary")
+    boundary = b"--" + m.group(1).encode()
+
+    fields = {}
+    files = []
+    raw_parts = body.split(boundary)
+    for raw in raw_parts[1:-1]:  # skip the preamble and the closing "--\r\n"
+        if raw.startswith(b"\r\n"):
+            raw = raw[2:]
+        if raw.endswith(b"\r\n"):
+            raw = raw[:-2]
+        header_blob, sep, content = raw.partition(b"\r\n\r\n")
+        if not sep:
+            continue
+        headers = {}
+        for line in header_blob.split(b"\r\n"):
+            if b":" in line:
+                k, v = line.split(b":", 1)
+                headers[k.strip().lower().decode("latin-1")] = v.strip().decode("latin-1")
+        disp = headers.get("content-disposition", "")
+        name_m = re.search(r'name="([^"]*)"', disp)
+        filename_m = re.search(r'filename="([^"]*)"', disp)
+        field_name = name_m.group(1) if name_m else None
+        if filename_m and filename_m.group(1):
+            files.append({"field": field_name, "filename": filename_m.group(1), "content": content})
+        elif field_name:
+            fields[field_name] = content.decode("utf-8", errors="replace")
+    return fields, files
+
+
+def handle_upload(body, content_type):
+    fields, files = parse_multipart_form(body, content_type)
+    if not files:
+        raise ChatError(400, "No file received")
+
+    session_id = fields.get("session_id") or secrets.token_hex(16)
+    uploaded = []
+
+    with SESSION_DOCS_LOCK:
+        docs = SESSION_DOCS.setdefault(session_id, [])
+        for f in files:
+            if len(f["content"]) > MAX_UPLOAD_BYTES:
+                raise ChatError(400, f"\"{f['filename']}\" is too large - 2MB max per file.")
+            try:
+                text = f["content"].decode("utf-8")
+            except UnicodeDecodeError:
+                raise ChatError(
+                    400,
+                    f"Could not read \"{f['filename']}\" as text. Only plain-text "
+                    "documents are supported right now (.txt, .md, .csv, .json, "
+                    "and similar) - PDFs and Word docs aren't parsed yet, so "
+                    "paste the text directly instead.",
+                )
+            excerpt = text[:MAX_DOC_CHARS]
+            docs.append({"filename": f["filename"], "content": excerpt})
+            uploaded.append({"filename": f["filename"], "chars": len(excerpt)})
+        del docs[:-MAX_DOCS_PER_SESSION]
+
+    return {"session_id": session_id, "uploaded": uploaded}
 
 
 def tokenize(text):
@@ -195,7 +279,23 @@ BUTLER_PERSONA = (
 )
 
 
-def build_system_prompt(notes):
+def build_docs_block(docs):
+    if not docs:
+        return ""
+    joined = "\n\n".join(f"### {d.get('filename', 'document')}\n{d.get('content', '')}" for d in docs)
+    return (
+        "\n\nThe owner has also attached the following document(s) to this "
+        "conversation (not part of the permanent notes vault - just working "
+        "material for this chat). Unlike web search results, these were "
+        "handed to you directly, so drawing on them closely - summarizing, "
+        "quoting, analyzing - is exactly the point; consult them whenever "
+        "they're relevant to what's being asked, alongside anything else in "
+        "play.\n\nATTACHED DOCUMENTS:\n" + joined
+    )
+
+
+def build_system_prompt(notes, docs=None):
+    docs_block = build_docs_block(docs)
     if notes:
         notes_block = "\n\n".join(
             f"### {n.get('label', 'Untitled')}  [{n.get('group', '')}]\n{n.get('excerpt', '')}"
@@ -210,7 +310,7 @@ def build_system_prompt(notes):
             "own words - never recite or quote a note back verbatim, since it "
             "is already open on screen right beside you. If the notes plainly "
             "don't cover the question, say so plainly (and wittily) rather "
-            "than guessing.\n\nNOTES:\n" + notes_block
+            "than guessing.\n\nNOTES:\n" + notes_block + docs_block
         )
     return (
         BUTLER_PERSONA + "\n\n"
@@ -232,15 +332,19 @@ def build_system_prompt(notes):
         "ORIGINAL composition in your own words and sentence structure - "
         "research is for gathering facts and forming your own "
         "understanding, never for lifting or lightly rewording someone "
-        "else's phrasing. If you quote a source directly, keep it brief "
-        "(well under twenty words), put it in quotation marks, and say "
-        "where it's from - the piece as a whole must be your own prose. "
-        "Never reproduce an existing published work (a real poem, "
+        "else's phrasing. (This originality rule is about outside sources "
+        "like web search - it does not apply to the owner's own attached "
+        "documents, if any are below: drawing on those closely is exactly "
+        "what they're for.) If you quote a web source directly, keep it "
+        "brief (well under twenty words), put it in quotation marks, and "
+        "say where it's from - the piece as a whole must be your own "
+        "prose. Never reproduce an existing published work (a real poem, "
         "article, speech, etc.) as if you wrote it - write a fresh piece "
         "in your own voice even when asked for something in the style of "
         "an existing work. A brief one-line introduction in character is "
         "welcome, but the requested piece itself is the point - do not "
         "summarize it away or cut it short."
+        + docs_block
     )
 
 
@@ -305,7 +409,9 @@ def handle_chat(question, session_id):
     model = load_model(config)
     nodes = load_notes()
     top_notes = [] if is_write_request(question) else score_notes(question, nodes)
-    system_prompt = build_system_prompt(top_notes)
+    with SESSION_DOCS_LOCK:
+        session_docs = list(SESSION_DOCS.get(session_id, []))
+    system_prompt = build_system_prompt(top_notes, session_docs)
 
     with SESSIONS_LOCK:
         history = list(SESSIONS.setdefault(session_id, []))
@@ -466,6 +572,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._handle_chat_request()
         elif self.path == "/remember":
             self._handle_remember_request()
+        elif self.path == "/upload":
+            self._handle_upload_request()
         else:
             self.send_error(404)
 
@@ -512,6 +620,29 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         try:
             result = handle_remember(text)
+        except ChatError as e:
+            self._send_json(e.status, {"error": str(e)})
+            return
+        except Exception as e:
+            self._send_json(500, {"error": f"unexpected server error: {e}"})
+            return
+
+        self._send_json(200, result)
+
+    def _handle_upload_request(self):
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            self._send_json(400, {"error": "expected multipart/form-data"})
+            return
+
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length <= 0 or length > MAX_UPLOAD_BODY_BYTES:
+            self._send_json(400, {"error": "invalid or too-large upload (2MB max per file)"})
+            return
+        body = self.rfile.read(length)
+
+        try:
+            result = handle_upload(body, content_type)
         except ChatError as e:
             self._send_json(e.status, {"error": str(e)})
             return
