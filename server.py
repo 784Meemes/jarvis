@@ -52,7 +52,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 DEFAULT_MODEL = "claude-sonnet-5"
 MAX_TOKENS = 4096  # generous enough for a full essay, not just a one-line answer
 WEB_SEARCH_TOOL = {"type": "web_search_20260209", "name": "web_search", "max_uses": 3}
-REQUEST_TIMEOUT_SECONDS = 120  # long-form writing takes longer than a quick lookup
+REQUEST_TIMEOUT_SECONDS = 300  # a researched essay (web search + thinking) can take minutes
 
 TOP_N = 6
 MAX_HISTORY_MESSAGES = 20  # 10 question/answer turns
@@ -276,6 +276,17 @@ def call_anthropic(api_key, model, system_prompt, messages, tools=None):
             raise ChatError(502, f"Anthropic API error: {msg}")
         except urllib.error.URLError as e:
             raise ChatError(502, f"Could not reach the Anthropic API: {e.reason}")
+        except TimeoutError:
+            # A plain read timeout (e.g. a long essay + web search taking a
+            # while to generate) raises bare TimeoutError, not URLError -
+            # urllib only wraps connection-stage failures, not a stalled
+            # read on an already-open connection - so it needs its own
+            # handler or it leaks as a raw Python error to the user.
+            raise ChatError(
+                504,
+                "That took too long to generate and timed out - try asking "
+                "again, or for something a bit shorter.",
+            )
 
     result = one_request(messages)
     if result.get("stop_reason") == "pause_turn":
