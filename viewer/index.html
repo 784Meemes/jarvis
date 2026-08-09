@@ -394,6 +394,27 @@
   }
   .chat-source-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+  .chat-save-doc {
+    align-self: flex-start;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.01em;
+    padding: 5px 12px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--dim);
+    background: rgba(238, 240, 251, 0.04);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+  }
+  .chat-save-doc:hover,
+  .chat-save-doc:focus-visible {
+    color: var(--starlight);
+    border-color: var(--accent-dim);
+    background: rgba(255, 184, 107, 0.1);
+  }
+  .chat-save-doc:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
   #chat-form {
     width: min(640px, 100%);
     display: flex;
@@ -1349,6 +1370,40 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     return { entry: entry, answerEl: a };
   }
 
+  // ---- create a document: turn a long answer into a real downloadable
+  // file, entirely client-side - no server storage, no new endpoint ----
+  var SAVE_DOC_MIN_CHARS = 200; // skip the button on short one-liners
+  var savedDocCount = 0;
+
+  function slugForFilename(text) {
+    var words = text.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().split(/\s+/).slice(0, 6);
+    return words.filter(Boolean).join("-") || "document";
+  }
+
+  function downloadAsDocument(filenameBase, text) {
+    var blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filenameBase + ".txt";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  function addSaveDocButton(entry, question, text) {
+    if (!text || text.length < SAVE_DOC_MIN_CHARS) return;
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "chat-save-doc";
+    btn.textContent = "⬇ Save as document";
+    btn.addEventListener("click", function () {
+      downloadAsDocument("ark-" + slugForFilename(question) + "-" + (++savedDocCount), text);
+    });
+    entry.appendChild(btn);
+  }
+
   function askGalaxy(question) {
     if (requestBusy) return;
     requestBusy = true;
@@ -1384,6 +1439,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
         ui.answerEl.textContent = answer;
         speak(truncateForSpeech(answer));
         revealSources(nodeIds);
+        addSaveDocButton(ui.entry, question, answer);
 
         if (nodeIds.length) {
           var chips = document.createElement("div");
