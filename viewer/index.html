@@ -155,6 +155,27 @@
     background: rgba(255, 90, 90, 0.08);
   }
 
+  #backdrop-toggle {
+    position: fixed;
+    top: 20px;
+    right: 68px;
+    z-index: 5;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: rgba(11, 13, 24, 0.55);
+    backdrop-filter: blur(6px);
+    color: var(--starlight);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+    animation: fade-in 1.1s ease-out 0.15s both;
+  }
+  #backdrop-toggle:hover { border-color: var(--accent-dim); }
+  #backdrop-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
   /* ---- observation card, slide-in side panel ---- */
   #panel {
     position: fixed;
@@ -476,6 +497,7 @@
 </div>
 
 <button id="mute-toggle" type="button" aria-label="Mute voice output" title="Mute the galaxy's voice">🔊</button>
+<button id="backdrop-toggle" type="button" aria-label="Change backdrop" title="Backdrop: Dusk Storm — click for next">🖼️</button>
 
 <div id="legend"></div>
 
@@ -528,6 +550,48 @@
     <circle cx="151" cy="663" r="7" fill="#020103"/>
   </svg>
 </div>
+
+<script>
+  // Plain (non-module) script, deliberately separate from the 3D graph's
+  // ES module script below: that module imports three.js/3d-force-graph
+  // from a CDN, and ES modules don't run ANY of their top-level code until
+  // every import resolves - so if this logic lived there, a slow or
+  // blocked CDN would silently break backdrop switching too. This runs
+  // immediately, independent of that.
+  (function () {
+    "use strict";
+    var backdropEl = document.getElementById("scene-backdrop");
+    var toggleBtn = document.getElementById("backdrop-toggle");
+
+    // Each entry is {name, svg}. The first entry is captured directly from
+    // the backdrop's own markup above at load time, so that artwork exists
+    // in exactly one place - not duplicated into this array by hand. New
+    // backgrounds just get appended here as {name, svg} objects.
+    var BACKDROPS = [
+      { name: "Dusk Storm", svg: backdropEl.innerHTML }
+    ];
+
+    var STORAGE_KEY = "jarvisBackdropIndex";
+    var index = 0;
+    try {
+      var saved = parseInt(localStorage.getItem(STORAGE_KEY), 10);
+      if (!isNaN(saved) && saved >= 0 && saved < BACKDROPS.length) index = saved;
+    } catch (e) { /* localStorage unavailable (private mode, etc.) */ }
+
+    function applyBackdrop(i) {
+      index = ((i % BACKDROPS.length) + BACKDROPS.length) % BACKDROPS.length;
+      backdropEl.innerHTML = BACKDROPS[index].svg;
+      toggleBtn.title = "Backdrop: " + BACKDROPS[index].name + " — click for next";
+      try { localStorage.setItem(STORAGE_KEY, String(index)); } catch (e) { /* ignore */ }
+    }
+
+    if (index !== 0) applyBackdrop(index);
+
+    toggleBtn.addEventListener("click", function () {
+      applyBackdrop(index + 1);
+    });
+  })();
+</script>
 
 <div id="graph"></div>
 
