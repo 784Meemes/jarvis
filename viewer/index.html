@@ -1169,15 +1169,34 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   var chosenVoice = null;
   var audioUnlocked = false;
 
+  // The Web Speech API has no standard gender field on a voice, so this is
+  // a name-based heuristic: an explicit "male"/"female" marker (common on
+  // Google/Chrome voices) takes precedence, then a list of common male
+  // voice given-names used across Windows/macOS/Linux TTS engines.
+  var MALE_VOICE_NAME_RE = /\b(daniel|oliver|arthur|george|david|james|ryan|guy|mark|alex|fred|thomas|william|henry|edward|colin|rishi|eric|nathan|aaron|liam|callum)\b/i;
+  function isMaleVoiceName(name) {
+    if (!name) return false;
+    if (/female/i.test(name)) return false;
+    if (/\bmale\b/i.test(name)) return true;
+    return MALE_VOICE_NAME_RE.test(name);
+  }
+
   function pickVoice() {
     if (!synth) return null;
     var voices = synth.getVoices() || [];
     if (!voices.length) return null;
+    var gb = voices.filter(function (v) { return v.lang === "en-GB"; });
+    var gbLike = voices.filter(function (v) { return /^en-GB/i.test(v.lang); });
+    var british = voices.filter(function (v) { return /british|uk english/i.test(v.name); });
+    var english = voices.filter(function (v) { return /^en/i.test(v.lang); });
+    function firstMale(list) { return list.find(function (v) { return isMaleVoiceName(v.name); }); }
     return (
-      voices.find(function (v) { return v.lang === "en-GB"; }) ||
-      voices.find(function (v) { return /^en-GB/i.test(v.lang); }) ||
-      voices.find(function (v) { return /british|uk english/i.test(v.name); }) ||
-      voices.find(function (v) { return /^en/i.test(v.lang); }) ||
+      firstMale(gb) ||
+      firstMale(gbLike) ||
+      firstMale(british) ||
+      firstMale(english) ||
+      firstMale(voices) ||
+      gb[0] || gbLike[0] || british[0] || english[0] ||
       voices[0]
     );
   }
@@ -1217,7 +1236,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
       if (chosenVoice) utter.voice = chosenVoice;
       utter.lang = chosenVoice ? chosenVoice.lang : "en-GB";
       utter.rate = 1;
-      utter.pitch = 1;
+      utter.pitch = 0.88; // slightly deeper, reinforcing a male tone on top of voice selection
       synth.speak(utter);
     } catch (e) { /* ignore */ }
   }
