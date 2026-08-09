@@ -135,6 +135,26 @@ def tokenize(text):
     return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 1 and w not in STOPWORDS]
 
 
+WRITE_VERBS = {"write", "writes", "compose", "composes", "draft", "drafts", "pen"}
+WRITE_NOUNS = {
+    "essay", "essays", "letter", "letters", "poem", "poems", "story", "stories",
+    "article", "articles", "summary", "summaries", "report", "reports", "speech",
+    "speeches", "paragraph", "paragraphs", "piece", "pieces", "blurb", "blurbs",
+    "post", "posts", "paper", "papers", "script", "scripts",
+}
+
+
+def is_write_request(text):
+    """A writing/composition request (both a write-verb and a document-noun
+    present) always bypasses notes-only mode, even if the topic happens to
+    match a note by keyword - "write an essay about stoicism" is a request
+    to write an essay, not a request to summarize the Stoicism note, and
+    needs the full internet (web search), not the vault's excerpt alone.
+    """
+    words = set(tokenize(text))
+    return bool(words & WRITE_VERBS) and bool(words & WRITE_NOUNS)
+
+
 def score_notes(question, nodes):
     """Rank notes by keyword overlap with the question; title hits count 3x.
 
@@ -203,10 +223,13 @@ def build_system_prompt(notes):
         "you have a web search tool - use it when it would actually help, "
         "then answer briefly in your own words, still in character.\n"
         "3. A request to write, compose, or draft something - an essay, "
-        "letter, poem, story, summary, or similar: write the complete "
-        "piece as asked, well-crafted and not artificially shortened, even "
-        "if it runs to several paragraphs. A brief one-line introduction "
-        "in character is welcome, but the requested piece itself is the "
+        "letter, poem, story, summary, or similar: the topic can be "
+        "absolutely anything, not just what's in the notes vault - use "
+        "your web search tool first if the topic needs current facts or "
+        "details you're not certain of, then write the complete piece as "
+        "asked, well-crafted and not artificially shortened, even if it "
+        "runs to several paragraphs. A brief one-line introduction in "
+        "character is welcome, but the requested piece itself is the "
         "point - do not summarize it away or cut it short."
     )
 
@@ -260,7 +283,7 @@ def handle_chat(question, session_id):
     api_key = load_api_key(config)
     model = load_model(config)
     nodes = load_notes()
-    top_notes = score_notes(question, nodes)
+    top_notes = [] if is_write_request(question) else score_notes(question, nodes)
     system_prompt = build_system_prompt(top_notes)
 
     with SESSIONS_LOCK:
