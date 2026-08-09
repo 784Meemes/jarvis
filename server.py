@@ -228,9 +228,19 @@ def build_system_prompt(notes):
         "your web search tool first if the topic needs current facts or "
         "details you're not certain of, then write the complete piece as "
         "asked, well-crafted and not artificially shortened, even if it "
-        "runs to several paragraphs. A brief one-line introduction in "
-        "character is welcome, but the requested piece itself is the "
-        "point - do not summarize it away or cut it short."
+        "runs to several paragraphs. Everything you write must be an "
+        "ORIGINAL composition in your own words and sentence structure - "
+        "research is for gathering facts and forming your own "
+        "understanding, never for lifting or lightly rewording someone "
+        "else's phrasing. If you quote a source directly, keep it brief "
+        "(well under twenty words), put it in quotation marks, and say "
+        "where it's from - the piece as a whole must be your own prose. "
+        "Never reproduce an existing published work (a real poem, "
+        "article, speech, etc.) as if you wrote it - write a fresh piece "
+        "in your own voice even when asked for something in the style of "
+        "an existing work. A brief one-line introduction in character is "
+        "welcome, but the requested piece itself is the point - do not "
+        "summarize it away or cut it short."
     )
 
 
