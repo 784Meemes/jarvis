@@ -48,6 +48,22 @@
     z-index: 1;
   }
 
+  /* ---- backdrop: a stormy dusk horizon behind the graph's WebGL canvas,
+     which renders with a transparent background so this shows through
+     (see Graph.backgroundColor in the script) ---- */
+  #scene-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+  #scene-backdrop svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
   /* ---- title strip, like the caption on an atlas plate ---- */
   #hint {
     position: fixed;
@@ -463,6 +479,56 @@
 
 <div id="legend"></div>
 
+<div id="scene-backdrop" aria-hidden="true">
+  <svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMax slice" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="sky-grad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#05040a"/>
+        <stop offset="32%" stop-color="#241226"/>
+        <stop offset="58%" stop-color="#7a2e1d"/>
+        <stop offset="78%" stop-color="#d9601f"/>
+        <stop offset="93%" stop-color="#ffb35c"/>
+        <stop offset="100%" stop-color="#ffdca0"/>
+      </linearGradient>
+      <linearGradient id="sea-grad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#ffb35c"/>
+        <stop offset="8%" stop-color="#8a3a22"/>
+        <stop offset="38%" stop-color="#1a0f1c"/>
+        <stop offset="100%" stop-color="#050308"/>
+      </linearGradient>
+      <radialGradient id="sun-glow" cx="50%" cy="100%" r="60%">
+        <stop offset="0%" stop-color="#ffe6b3" stop-opacity="0.85"/>
+        <stop offset="100%" stop-color="#ffe6b3" stop-opacity="0"/>
+      </radialGradient>
+    </defs>
+
+    <rect x="0" y="0" width="1600" height="900" fill="url(#sky-grad)"/>
+    <ellipse cx="800" cy="605" rx="520" ry="270" fill="url(#sun-glow)"/>
+
+    <g fill="#0b060d" opacity="0.55">
+      <ellipse cx="220" cy="130" rx="260" ry="55"/>
+      <ellipse cx="390" cy="100" rx="180" ry="42"/>
+      <ellipse cx="1260" cy="85" rx="300" ry="65"/>
+      <ellipse cx="1430" cy="145" rx="200" ry="48"/>
+      <ellipse cx="700" cy="55" rx="220" ry="38" opacity="0.4"/>
+    </g>
+
+    <path d="M0,640 L120,580 L260,610 L420,558 L600,598 L820,552 L1040,602 L1260,562 L1440,612 L1600,588 L1600,650 L0,650 Z" fill="#08050a"/>
+
+    <rect x="0" y="620" width="1600" height="280" fill="url(#sea-grad)"/>
+    <ellipse cx="900" cy="646" rx="230" ry="20" fill="#1a0f1c" opacity="0.6"/>
+
+    <!-- a large original creature silhouette breaching the water, not a
+         reproduction of any specific published design -->
+    <path d="M755,642 C775,515 858,412 942,392 C918,456 896,520 928,562 C960,520 1012,478 1064,466 C1032,520 1010,572 1032,624 C1000,602 948,612 908,644 C858,600 798,610 755,642 Z" fill="#040308"/>
+    <path d="M898,428 C910,406 932,396 948,402 C936,420 918,430 898,428 Z" fill="#040308"/>
+
+    <path d="M0,900 L0,758 L92,698 L222,738 L342,688 L424,718 L424,900 Z" fill="#020103"/>
+    <rect x="148" y="670" width="6" height="32" fill="#020103"/>
+    <circle cx="151" cy="663" r="7" fill="#020103"/>
+  </svg>
+</div>
+
 <div id="graph"></div>
 
 <div id="panel">
@@ -640,13 +706,16 @@ import * as THREE from "https://esm.sh/three@0.180.0";
     return group;
   }
 
-  // ---- starfield, added straight into the graph's own three.js scene ----
+  // ---- sparse stars, added straight into the graph's own three.js scene --
+  // Dialed back from a full starfield: the painted dusk sky behind the
+  // (now-transparent) canvas already carries most of the atmosphere, so
+  // this only needs to read as a few points breaking through storm clouds.
   function makeStarfield() {
     var starGroup = new THREE.Group();
     var layers = [
-      { count: 2200, radius: 3200, size: 2.2, opacity: 0.85 },
-      { count: 1400, radius: 5200, size: 3.4, opacity: 0.55 },
-      { count: 900, radius: 7800, size: 5.0, opacity: 0.35 }
+      { count: 700, radius: 3200, size: 2.0, opacity: 0.5 },
+      { count: 450, radius: 5200, size: 3.0, opacity: 0.32 },
+      { count: 300, radius: 7800, size: 4.4, opacity: 0.2 }
     ];
     layers.forEach(function (layer) {
       var positions = new Float32Array(layer.count * 3);
@@ -678,7 +747,7 @@ import * as THREE from "https://esm.sh/three@0.180.0";
   // ---- build the graph ----------------------------------------------------
   var elem = document.getElementById("graph");
   var Graph = ForceGraph3D()(elem)
-    .backgroundColor("#05060b")
+    .backgroundColor("rgba(0,0,0,0)") // transparent - the painted backdrop shows through
     .graphData({ nodes: nodes, links: links })
     .nodeId("id")
     .nodeLabel(function (n) { return n.label; })
@@ -735,7 +804,9 @@ import * as THREE from "https://esm.sh/three@0.180.0";
 
   // starfield lives directly in the scene, independent of the node graph
   Graph.scene().add(makeStarfield());
-  Graph.scene().fog = new THREE.FogExp2(0x00000a, 0.00028);
+  // A dark storm-purple rather than pure black, so distant nodes fade into
+  // something close to the backdrop's upper sky instead of clashing with it.
+  Graph.scene().fog = new THREE.FogExp2(0x140b18, 0.00024);
 
   // slow idle drift via OrbitControls' built-in auto-rotate
   var controls = Graph.controls();
